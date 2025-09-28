@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "registryName": "builtin-dev",
+  "generatedAt": "2025-09-28T00:00:00Z",
+  "plugins": [
+    {
+      "name": "baseline_popularity_plugin",
+      "humanName": "Baseline Popularity",
+      "version": "0.1.0",
+      "description": "Popularity-based recommendations baseline",
+      "dependsOn": [
+        "skier_aitagging_plugin"
+      ],
+      "serverLink": "https://github.com/example/baseline-popularity",
+      "requiredBackend": ">=0.0.0",
+      "path": "baseline_popularity_plugin",
+      "manifest": "baseline_popularity_plugin/plugin.yml"
+    },
+    {
+      "name": "example_plugin",
+      "humanName": "Example Plugin",
+      "version": "0.1.0",
+      "description": "Example plugin demonstrating actions and recommenders",
+      "dependsOn": [],
+      "serverLink": "https://github.com/example/ai-example-plugin",
+      "requiredBackend": ">=0.0.0",
+      "path": "example_plugin",
+      "manifest": "example_plugin/plugin.yml"
+    },
+    {
+      "name": "random_recent_plugin",
+      "humanName": "Random Recent",
+      "version": "0.1.0",
+      "description": "Random selection from recent scenes",
+      "dependsOn": [],
+      "serverLink": "https://github.com/example/random-recent",
+      "requiredBackend": ">=0.0.0",
+      "path": "random_recent_plugin",
+      "manifest": "random_recent_plugin/plugin.yml"
+    },
+    {
+      "name": "skier_aitagging_plugin",
+      "humanName": "Skier AI Tagging",
+      "version": "0.1.0",
+      "description": "AI tagging service providing metadata enrichment",
+      "dependsOn": [],
+      "serverLink": "https://github.com/example/ai-tagging",
+      "requiredBackend": ">=0.0.0",
+      "path": "skier_aitagging_plugin",
+      "manifest": "skier_aitagging_plugin/plugin.yml"
+    },
+    {
+      "name": "slow_service_plugin",
+      "humanName": "Slow Service",
+      "version": "0.1.0",
+      "description": "Demo service simulating long-running tasks",
+      "dependsOn": [],
+      "serverLink": "https://github.com/example/slow-service",
+      "requiredBackend": ">=0.0.0",
+      "path": "slow_service_plugin",
+      "manifest": "slow_service_plugin/plugin.yml"
+    }
+  ]
+}
