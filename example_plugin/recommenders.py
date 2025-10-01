@@ -1,9 +1,6 @@
-from stash_ai_server.
-recommendations.registry import recommender
-from stash_ai_server.
-recommendations.models import RecContext, RecommendationRequest
-from stash_ai_server.
-utils.stash import fetch_scenes_by_tag_paginated
+from stash_ai_server.recommendations.registry import recommender
+from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
+from stash_ai_server.utils.stash import fetch_scenes_by_tag_paginated
 
 @recommender(id='example_plugin.random', label='Example Random', contexts=[RecContext.global_feed])
 async def example_random(ctx: dict, req: RecommendationRequest):

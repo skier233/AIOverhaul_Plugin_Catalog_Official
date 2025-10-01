@@ -1,9 +1,6 @@
-from stash_ai_server.
-recommendations.registry import recommender
-from stash_ai_server.
-recommendations.models import RecContext, RecommendationRequest
-from stash_ai_server.
-utils.stash import fetch_scenes_by_tag_paginated
+from stash_ai_server.recommendations.registry import recommender
+from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
+from stash_ai_server.utils.stash import fetch_scenes_by_tag_paginated
 from typing import Dict, Any, List
 import random, time
 

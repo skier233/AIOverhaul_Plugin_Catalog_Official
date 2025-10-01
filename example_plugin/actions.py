@@ -1,9 +1,6 @@
-from stash_ai_server.
-actions.registry import action, ContextRule
-from stash_ai_server.
-actions.models import ContextInput
-from stash_ai_server.
-services.registry import ServiceBase, services
+from stash_ai_server.actions.registry import action, ContextRule
+from stash_ai_server.actions.models import ContextInput
+from stash_ai_server.services.registry import ServiceBase, services
 
 
 class ExamplePluginService(ServiceBase):
