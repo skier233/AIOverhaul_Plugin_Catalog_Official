@@ -1,8 +1,13 @@
-from app.services.registry import ServiceBase, services
-from app.actions.registry import action, registry as action_registry
-from app.actions.models import ContextRule, ContextInput
-from app.tasks.manager import manager as task_manager
-from app.tasks.models import TaskPriority
+from stash_ai_server.
+services.registry import ServiceBase, services
+from stash_ai_server.
+actions.registry import action, registry as action_registry
+from stash_ai_server.
+actions.models import ContextRule, ContextInput
+from stash_ai_server.
+tasks.manager import manager as task_manager
+from stash_ai_server.
+tasks.models import TaskPriority
 import asyncio, time
 
 class SlowService(ServiceBase):
