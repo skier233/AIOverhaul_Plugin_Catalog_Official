@@ -6,7 +6,7 @@
     {
       "name": "baseline_popularity_plugin",
       "humanName": "Baseline Popularity",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Popularity-based recommendations baseline",
       "dependsOn": [
         "skier_aitagging_plugin"
@@ -41,7 +41,7 @@
     {
       "name": "skier_aitagging_plugin",
       "humanName": "Skier AI Tagging",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "AI tagging service providing metadata enrichment",
       "dependsOn": [],
       "serverLink": "https://github.com/example/ai-tagging",
@@ -52,7 +52,7 @@
     {
       "name": "slow_service_plugin",
       "humanName": "Slow Service",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Demo service simulating long-running tasks",
       "dependsOn": [],
       "serverLink": "https://github.com/example/slow-service",
