@@ -4,6 +4,8 @@ from stash_ai_server.actions.models import ContextRule, ContextInput
 from stash_ai_server.tasks.manager import manager as task_manager
 from stash_ai_server.tasks.models import TaskPriority
 import asyncio, time
+import numpy as np  # Example usage of the added dependency
+print("numpy version" + str(np.__version__))  # Just to avoid linter warnings about unused import
 
 class SkierAITaggingService(ServiceBase):
     name = 'skier.ai_tagging'

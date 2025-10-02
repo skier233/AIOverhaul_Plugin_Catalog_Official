@@ -6,3 +6,6 @@ required_backend: '>=0.0.0'
 files:
   - service
 depends_on: []
+pip_dependencies:
+  - "numpy==2.3.3"
+

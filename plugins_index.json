@@ -47,7 +47,10 @@
       "serverLink": "https://github.com/example/ai-tagging",
       "requiredBackend": ">=0.0.0",
       "path": "skier_aitagging_plugin",
-      "manifest": "skier_aitagging_plugin/plugin.yml"
+      "manifest": "skier_aitagging_plugin/plugin.yml",
+      "pip_dependencies": [
+        "numpy==2.3.3"
+      ]
     },
     {
       "name": "slow_service_plugin",
