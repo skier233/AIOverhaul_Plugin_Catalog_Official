@@ -14,7 +14,6 @@ class SlowService(ServiceBase):
         id='slow.sleep.short',
         label='Slow Sleep Short',
         description='Short sleep task (0.2s)',
-        service='slow',
         result_kind='dialog',
         contexts=[ContextRule(pages=['scenes'], selection='single')],
     )
@@ -26,7 +25,6 @@ class SlowService(ServiceBase):
         id='slow.sleep.long',
         label='Slow Sleep Long',
         description='Long sleep task (default 1.0s) interruptible',
-        service='slow',
         result_kind='dialog',
         contexts=[ContextRule(pages=['scenes'], selection='single')],
     )
@@ -43,7 +41,6 @@ class SlowService(ServiceBase):
         id='slow.fail',
         label='Slow Fail',
         description='Deterministically raises an exception to test failure handling',
-        service='slow',
         result_kind='dialog',
         contexts=[ContextRule(pages=['scenes'], selection='single')],
     )
@@ -54,10 +51,8 @@ class SlowService(ServiceBase):
         id='slow.batch.spawn',
         label='Slow Batch Spawn',
         description='Spawn multiple long sleep child tasks',
-        service='slow',
         result_kind='dialog',
         contexts=[ContextRule(pages=['scenes'], selection='multi')],
-        controller=True,
     )
     async def batch_spawn(self, ctx: ContextInput, params: dict, task):
         count = int(params.get('count', 3)); duration = float(params.get('seconds', 1.0)); hold = float(params.get('hold', 0))

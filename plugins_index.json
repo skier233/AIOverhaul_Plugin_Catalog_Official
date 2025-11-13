@@ -3,17 +3,17 @@
   "registryName": "builtin",
   "plugins": [
     {
-      "name": "baseline_popularity_plugin",
-      "humanName": "Baseline Popularity",
+      "name": "example_recommender_2",
+      "humanName": "Example Recommender 2",
       "version": "0.1.0",
-      "description": "Popularity-based recommendations baseline",
+      "description": "Example Recommender 2 Demo",
       "dependsOn": [
         "skier_aitagging_plugin"
       ],
-      "serverLink": "https://github.com/example/baseline-popularity",
+      "serverLink": "https://github.com/example/example_recommender_2",
       "requiredBackend": ">=0.0.0",
-      "path": "baseline_popularity_plugin",
-      "manifest": "baseline_popularity_plugin/plugin.yml"
+      "path": "example_recommender_2",
+      "manifest": "example_recommender_2/plugin.yml"
     },
     {
       "name": "example_plugin",

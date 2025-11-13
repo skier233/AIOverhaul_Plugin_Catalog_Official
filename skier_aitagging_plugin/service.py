@@ -1,110 +1,131 @@
-from stash_ai_server.services.registry import ServiceBase, services
-from stash_ai_server.actions.registry import action, registry as action_registry
+from __future__ import annotations
+
+import logging
+import os
+from typing import Mapping
+
+from stash_ai_server.services.base import RemoteServiceBase
+from stash_ai_server.services.registry import services
+from stash_ai_server.actions.registry import action
 from stash_ai_server.actions.models import ContextRule, ContextInput
-from stash_ai_server.tasks.manager import manager as task_manager
-from stash_ai_server.tasks.models import TaskPriority
-import asyncio, time
-import numpy as np  # Example usage of the added dependency
-print("numpy version" + str(np.__version__))  # Just to avoid linter warnings about unused import
 
-class SkierAITaggingService(ServiceBase):
-    name = 'skier.ai_tagging'
-    description = 'AI tagging and analysis service'
-    server_url = None
-    max_concurrency = 2
+from stash_ai_server.tasks.models import TaskRecord
 
-    @action(
-        id='skier.ai_tag.image',
-        label='AI Tag Image',
-        description='Generate tag suggestions for an image',
-        service='ai',
-        result_kind='dialog',
-        contexts=[ContextRule(pages=['images'], selection='single')],
-    )
-    async def tag_image_single(self, ctx: ContextInput, params: dict):
-        selected = ctx.selected_ids or ([ctx.entity_id] if ctx.entity_id else [])
-        return {'targets': selected,'tags': [{'name':'outdoor','confidence':0.92},{'name':'portrait','confidence':0.81}]}
+from . import logic
 
-    @action(
-        id='skier.ai_tag.image',
-        label='AI Tag Images',
-        description='Generate tag suggestions for images',
-        service='ai',
-        result_kind='dialog',
-        contexts=[ContextRule(pages=['images'], selection='multi')],
-    )
-    async def tag_image_bulk(self, ctx: ContextInput, params: dict):
-        selected = ctx.selected_ids or ([ctx.entity_id] if ctx.entity_id else [])
-        return {'targets': selected,'tags': [{'name':'outdoor','confidence':0.92},{'name':'portrait','confidence':0.81}]}
+_log = logging.getLogger(__name__)
+
+
+class SkierAITaggingService(RemoteServiceBase):
+    name = "AI_Tagging"
+    description = "AI tagging and analysis service"
+    max_concurrency = 10
+    ready_endpoint = "/ready"
+    readiness_cache_seconds = 30.0
+    failure_backoff_seconds = 60.0
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._api_key: str | None = None
+        self.reload_settings()
+
+    def reload_settings(self) -> None:
+        """Load settings from DB and environment variables."""
+        cfg = self._load_settings()
+        
+        # Load server URL
+        server_setting = cfg.get("server_url")
+        if server_setting is not None:
+            self.server_url = server_setting or None
+
+    # ------------------------------------------------------------------
+    # Image actions
+    # ------------------------------------------------------------------
 
     @action(
-        id='skier.ai_tag.scene',
-        label='AI Tag Scene',
-        description='Analyze a scene for tag segments',
-        service='ai',
-        result_kind='dialog',
-        contexts=[ContextRule(pages=['scenes'], selection='single')],
+        id="skier.ai_tag.image",
+        label="AI Tag Image",
+        description="Generate tag suggestions for an image",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["images"], selection="single")],
     )
-    async def tag_scene_single(self, ctx: ContextInput, params: dict):
-        selected = ctx.selected_ids or ([ctx.entity_id] if ctx.entity_id else [])
-        if not selected: selected = ['demo-scene-1']
-        per_scene = []
-        for sid in selected:
-            remaining = 0.5
-            while remaining > 0:
-                chunk = min(0.05, remaining); await asyncio.sleep(chunk); remaining -= chunk
-            per_scene.append({'scene_id': sid,'suggested_tags': [{'name':'hard-light','confidence':0.74},{'name':'dialogue-heavy','confidence':0.63}],'notes':'Mock inference data'})
-        return {'targets': selected,'scenes': per_scene,'summary': f'{len(selected)} scene(s) processed (stub single)'}
+    async def tag_image_single(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_images(self, ctx, params, task_record)
 
     @action(
-        id='skier.ai_tag.batch.spawn.scenes',
-        label='AI Batch Spawn Scenes',
-        description='Spawn individual tagging subtasks for each selected scene',
-        service='ai',
-        result_kind='dialog',
-        contexts=[ContextRule(pages=['scenes'], selection='multi')],
-        controller=True,
+        id="skier.ai_tag.image.selected",
+        label="Tag Selected Images",
+        description="Generate tag suggestions for selected images",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["images"], selection="multi")],
     )
-    async def batch_spawn_scenes(self, ctx: ContextInput, params: dict, task_record):
-        selected = ctx.selected_ids or []
-        if not selected: return {'message':'No scenes selected'}
-        reg = action_registry; spawned: list[str] = []
-        for sid in selected:
-            detail_ctx = ContextInput(page='scenes', entityId=sid, isDetailView=True, selectedIds=[])
-            resolved = reg.resolve('ai.tag.scenes', detail_ctx)
-            if not resolved: continue
-            definition, handler = resolved
-            child = task_manager.submit(definition, handler, detail_ctx, {}, TaskPriority.high, group_id=task_record.id)
-            spawned.append(child.id)
-        hold = params.get('hold_children', True)
-        min_hold = float(params.get('hold_parent_seconds', 0) or 0)
-        start_time = time.time()
-        if hold:
-            while True:
-                children = [t for t in task_manager.tasks.values() if t.group_id == task_record.id]
-                pending = [c for c in children if c.status not in ('completed','failed','cancelled')]
-                elapsed = time.time() - start_time
-                if not pending and elapsed >= min_hold: break
-                await asyncio.sleep(0.1)
-                if getattr(task_record, 'cancel_requested', False): break
-        return {'spawned': spawned,'count': len(spawned),'held': bool(hold),'min_hold': (min_hold if min_hold else None)}
+    async def tag_image_selected(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_images(self, ctx, params, task_record)
 
     @action(
-        id='skier.ai_tag.scene',
-        label='AI Tag Scenes',
-        description='Analyze scenes for tag segments',
-        service='ai',
-        result_kind='dialog',
-        contexts=[ContextRule(pages=['scenes'], selection='multi')],
+        id="skier.ai_tag.image.page",
+        label="Tag Page Images",
+        description="Generate tag suggestions for all images on the current page",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["images"], selection="page")],
     )
-    async def tag_scene_bulk(self, ctx: ContextInput, params: dict):
-        selected = ctx.selected_ids or ([ctx.entity_id] if ctx.entity_id else [])
-        if not selected: selected = ['demo-scene-1']
-        per_scene = []
-        for sid in selected:
-            per_scene.append({'scene_id': sid,'suggested_tags': [{'name':'hard-light','confidence':0.74},{'name':'dialogue-heavy','confidence':0.63}],'notes':'Mock inference data'})
-        return {'targets': selected,'scenes': per_scene,'summary': f'{len(selected)} scene(s) processed (stub)'}
+    async def tag_image_page(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_images(self, ctx, params, task_record)
 
+    @action(
+        id="skier.ai_tag.image.all",
+        label="Tag All Images",
+        description="Analyze every image in the library",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["images"], selection="none")],
+    )
+    async def tag_image_all(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_images(self, ctx, params, task_record)
+
+    # ------------------------------------------------------------------
+    # Scene actions - use controller pattern to spawn child tasks
+    # ------------------------------------------------------------------
+
+    @action(
+        id="skier.ai_tag.scene",
+        label="AI Tag Scene",
+        description="Analyze a scene for tag segments",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["scenes"], selection="single")],
+    )
+    async def tag_scene_single(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_scenes(self, ctx, params, task_record)
+
+    @action(
+        id="skier.ai_tag.scene.selected",
+        label="Tag Selected Scenes",
+        description="Analyze selected scenes for tag segments",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["scenes"], selection="multi")],
+    )
+    async def tag_scene_selected(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_scenes(self, ctx, params, task_record)
+
+    @action(
+        id="skier.ai_tag.scene.page",
+        label="Tag Page Scenes",
+        description="Analyze every scene visible in the current list view",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["scenes"], selection="page")],
+    )
+    async def tag_scene_page(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_scenes(self, ctx, params, task_record)
+
+    @action(
+        id="skier.ai_tag.scene.all",
+        label="Tag All Scenes",
+        description="Analyze every scene in the library",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["scenes"], selection="none")],
+    )
+    async def tag_scene_all(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        # For "all" scope, just acknowledge the request
+        return await logic.tag_scenes(self, ctx, params, task_record)
 
 def register():
     services.register(SkierAITaggingService())

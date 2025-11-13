@@ -1,6 +1,6 @@
-name: baseline_popularity_plugin
-human_name: Baseline Popularity
-server_link: https://github.com/example/baseline-popularity
+name: example_recommender_2
+human_name: Example Recommender 2
+server_link: https://github.com/example/example_recommender_2
 version: 0.1.0
 required_backend: '>=0.0.0'
 files:

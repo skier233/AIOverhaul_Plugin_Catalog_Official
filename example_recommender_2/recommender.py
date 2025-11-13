@@ -1,33 +1,33 @@
 from stash_ai_server.recommendations.registry import recommender
 from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
-from stash_ai_server.utils.stash import fetch_scenes_by_tag_paginated
+from stash_ai_server.utils.stash_api import stash_api
 from typing import Dict, Any
 
 @recommender(
-    id='baseline_popularity',
-    label='Baseline Popularity',
-    description='Deterministic pseudo-popularity ordering over sample scene set',
+    id='example_recommender_2.example_recommender_2',
+    label='Example Recommender 2',
+    description='Example Recommender 2 Demo',
     contexts=[RecContext.global_feed, RecContext.similar_scene],
     config=[
-        { 'name':'min_score','label':'Min Score','type':'number','default':0,'min':0,'max':100 },
-        { 'name':'rank_window','label':'Rank Window','type':'slider','default':50,'min':10,'max':200,'step':10 },
-        { 'name':'ordering','label':'Ordering','type':'select','default':'pop','options': [ {'value':'pop','label':'Popularity'}, {'value':'id_desc','label':'ID Desc'}, {'value':'id_asc','label':'ID Asc'} ] },
-        { 'name':'include_studio','label':'Include Studio Name','type':'boolean','default':True },
-        { 'name':'note','label':'Annotate','type':'text','default':'baseline run'},
-        { 'name':'search_query','label':'Search','type':'search','default':'','help':'Sample search style input' },
-        { 'name':'focus_tags','label':'Focus Tags','type':'tags','default':[],'tag_combination':'and', 'constraint_types':['presence','duration'], 'allowed_combination_modes':['or', 'and'] },
-        { 'name':'filter_tags','label':'Filter Tags','type':'tags','default':[],'tag_combination':'or', 'constraint_types':['overlap','importance'], 'allowed_combination_modes':['and'] },
-        { 'name':'boost_performers','label':'Boost Performers','type':'performers','default':[] },
-        { 'name':'scoring_mode','label':'Scoring Mode','type':'enum','default':'simple','options':[ {'value':'simple','label':'Simple'}, {'value':'weighted','label':'Weighted'} ] },
+        { 'name':'min_score','label':'Min Score', "help": "dummy help",'type':'number','default':0,'min':0,'max':100 },
+        { 'name':'rank_window','label':'Rank Window', "help": "dummy help",'type':'slider','default':50,'min':10,'max':200,'step':10 },
+        { 'name':'ordering','label':'Ordering', "help": "dummy help",'type':'select','default':'pop','options': [ {'value':'pop','label':'Popularity'}, {'value':'id_desc','label':'ID Desc'}, {'value':'id_asc','label':'ID Asc'} ] },
+        { 'name':'include_studio','label':'Include Studio Name', "help": "dummy help",'type':'boolean','default':True },
+        { 'name':'note','label':'Annotate', "help": "dummy help",'type':'text','default':'baseline run'},
+        { 'name':'search_query','label':'Search', "help": "dummy help",'type':'search','default':'','help':'Sample search style input' },
+        { 'name':'focus_tags','label':'Focus Tags', "help": "dummy help",'type':'tags','default':[],'tag_combination':'and', 'constraint_types':['presence','duration'], 'allowed_combination_modes':['or', 'and'] },
+        { 'name':'filter_tags','label':'Filter Tags', "help": "dummy help",'type':'tags','default':[],'tag_combination':'or', 'constraint_types':['overlap','importance'], 'allowed_combination_modes':['and'] },
+        { 'name':'boost_performers','label':'Boost Performers', "help": "dummy help",'type':'performers','default':[] },
+        { 'name':'scoring_mode','label':'Scoring Mode', "help": "dummy help",'type':'enum','default':'simple','options':[ {'value':'simple','label':'Simple'}, {'value':'weighted','label':'Weighted'} ] },
     ],
     supports_pagination=False,
     exposes_scores=False
 )
-async def baseline_popularity(ctx: Dict[str, Any], request: RecommendationRequest):
+async def example_recommender_2(ctx: Dict[str, Any], request: RecommendationRequest):
     cfg = request.config or {}
     limit = request.limit or 40
     offset = request.offset or 0
-    scenes, approx_total, has_more = fetch_scenes_by_tag_paginated(118, offset, limit)
+    scenes, approx_total, has_more = stash_api.fetch_scenes_by_tag_paginated(118, offset, limit)
     min_score = cfg.get('min_score')
     if isinstance(min_score, (int, float)) and min_score > 0:
         scenes = [s for s in scenes if (s.get('rating100') or 0) >= min_score]
