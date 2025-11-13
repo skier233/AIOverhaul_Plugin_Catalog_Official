@@ -148,7 +148,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
         }
 
     try:
-        image_paths = await asyncio.to_thread(stash_api.get_image_paths, image_ids)
+        image_paths = await stash_api.get_image_paths_async(image_ids)
     except Exception as exc:
         _log.exception("Failed to fetch image paths for ids=%s", image_ids)
         detail = _short_error(str(exc) or exc.__class__.__name__)
@@ -221,7 +221,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
             _log.debug("Images API metrics: %s", getattr(response, "metrics", None))
         except Exception:
             _log.exception("Remote image tagging failed for %d images", len(remote_image_ids))
-            await asyncio.to_thread(add_error_tag_to_images, remote_image_ids)
+            add_error_tag_to_images(remote_image_ids)
             for iid in remote_image_ids:
                 failure_reasons[iid] = "remote service request failed"
             failed_images.update(remote_image_ids)
@@ -234,7 +234,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                 payload = result_payload[idx] if idx < len(result_payload) else {}
                 if isinstance(payload, dict) and payload.get("error"):
                     failure_reasons[image_id] = _short_error(str(payload.get("error")))
-                    await asyncio.to_thread(add_error_tag_to_images, [image_id])
+                    add_error_tag_to_images([image_id])
                     failed_images.add(image_id)
                     continue
 
@@ -274,9 +274,9 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 
         try:
             if stored_tag_ids:
-                await asyncio.to_thread(stash_api.remove_tags_from_images, [image_id], stored_tag_ids)
+                await stash_api.remove_tags_from_images_async([image_id], stored_tag_ids)
             if normalized_ids:
-                await asyncio.to_thread(stash_api.add_tags_to_images, [image_id], normalized_ids)
+                await stash_api.add_tags_to_images_async([image_id], normalized_ids)
         except Exception:
             _log.exception("Failed to refresh tags for image_id=%s", image_id)
             failure_reasons[image_id] = "failed to sync tags with Stash"
@@ -331,10 +331,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
 
     service = params["service"]
     try:
-        scene_path, scene_tags, scene_duration = await asyncio.to_thread(
-            stash_api.get_scene_path_and_tags_and_duration,
-            scene_id,
-        )
+        scene_path, scene_tags, scene_duration = await stash_api.get_scene_path_and_tags_and_duration_async(scene_id)
     except Exception as exc:
         _log.exception("Failed to load scene metadata for scene_id=%s", scene_id)
         detail = _short_error(str(exc) or exc.__class__.__name__)

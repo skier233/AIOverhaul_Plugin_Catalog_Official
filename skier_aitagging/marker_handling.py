@@ -104,6 +104,7 @@ async def apply_scene_markers(
 
     # Result: tag_id -> merged spans
     result: dict[int, list[TagTimeFrame]] = {}
+    tag_names: dict[int, str] = {}
     # Track which tag IDs we're managing
     managed_tag_ids: list[int] = []
 
@@ -124,6 +125,7 @@ async def apply_scene_markers(
                 _log.warning("Could not resolve tag name for tag_id=%s; skipping", tag_id)
                 continue
             managed_tag_ids.append(tag_id)
+            tag_names[tag_id] = tag_name
             # Use tag name to look up config (config is keyed by backend tag names)
             # Since we already resolved backend->stash during storage, we need to find
             # which backend tag maps to this stash tag
@@ -144,12 +146,14 @@ async def apply_scene_markers(
     if managed_tag_ids:
         # Remove old markers for these tags
         _log.info("Removing old markers for scene_id=%s with %d tag(s)", scene_id, len(managed_tag_ids))
-        stash_api.destroy_markers_with_tags(scene_id, managed_tag_ids)
+        await stash_api.destroy_markers_with_tags_async(scene_id, managed_tag_ids)
         
         # Create new markers
         markers_to_create: dict[tuple[int, str], list[tuple[float, float]]] = {}
         for tag_id, spans in result.items():
-            tag_name = stash_api.get_stash_tag_name(tag_id)
+            tag_name = tag_names.get(tag_id)
+            if not tag_name:
+                tag_name = stash_api.get_stash_tag_name(tag_id)
             if not tag_name:
                 continue
             markers_to_create[(tag_id, tag_name)] = [
@@ -160,7 +164,7 @@ async def apply_scene_markers(
         if markers_to_create:
             total_markers = sum(len(spans) for spans in markers_to_create.values())
             _log.info("Creating %d markers for scene_id=%s", total_markers, scene_id)
-            stash_api.create_scene_markers(scene_id, markers_to_create)
+            await stash_api.create_scene_markers_async(scene_id, markers_to_create)
 
     return result
 
@@ -205,7 +209,7 @@ def _merge_contiguous(
 
     merged: list[TagTimeFrame] = []
     current_start = spans[0].start
-    current_end = spans[0].end if spans[0].end is not None else spans[0].start + frame_interval
+    current_end = spans[0].end if spans[0].end is not None else spans[0].start
     confidences = _confidence_list(spans[0].confidence)
 
     for frame in spans[1:]:

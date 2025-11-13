@@ -1,19 +1,11 @@
 from __future__ import annotations
-
-import logging
-import os
-from typing import Mapping
-
 from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.services.registry import services
 from stash_ai_server.actions.registry import action
 from stash_ai_server.actions.models import ContextRule, ContextInput
-
 from stash_ai_server.tasks.models import TaskRecord
-
+from stash_ai_server.utils.stash_api import stash_api
 from . import logic
-
-_log = logging.getLogger(__name__)
 
 
 class SkierAITaggingService(RemoteServiceBase):
@@ -80,6 +72,7 @@ class SkierAITaggingService(RemoteServiceBase):
         contexts=[ContextRule(pages=["images"], selection="none")],
     )
     async def tag_image_all(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        ctx.selected_ids = await stash_api.get_all_images_async()
         return await logic.tag_images(self, ctx, params, task_record)
 
     # ------------------------------------------------------------------
@@ -124,7 +117,7 @@ class SkierAITaggingService(RemoteServiceBase):
         contexts=[ContextRule(pages=["scenes"], selection="none")],
     )
     async def tag_scene_all(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
-        # For "all" scope, just acknowledge the request
+        ctx.selected_ids = await stash_api.get_all_scenes_async()
         return await logic.tag_scenes(self, ctx, params, task_record)
 
 def register():

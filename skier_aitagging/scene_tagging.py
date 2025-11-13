@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Sequence
 
@@ -50,7 +49,7 @@ async def apply_scene_tags(
     tags_to_add: set[int] = set()
     tags_to_remove: set[int] = set()
 
-    def _evaluate_tag(tag_id: int, duration: float) -> None:
+    async def _evaluate_tag(tag_id: int, duration: float) -> None:
         tag_name = stash_api.get_stash_tag_name(tag_id)
         if not tag_name:
             return
@@ -78,7 +77,7 @@ async def apply_scene_tags(
             tags_to_remove.add(tag_id)
 
     for tag_id, duration in aggregate_totals.items():
-        _evaluate_tag(tag_id, duration)
+        await _evaluate_tag(tag_id, duration)
 
     # Remove anything we manage that is currently on the scene and in our ai tag cache
     for tag_id in current_ai_tags:
@@ -96,12 +95,12 @@ async def apply_scene_tags(
 
     if removed_ids:
         try:
-            stash_api.remove_tags_from_scene(scene_id, removed_ids)
+            await stash_api.remove_tags_from_scene_async(scene_id, removed_ids)
         except Exception:
             _log.exception("Failed to remove scene tags %s from scene_id=%s", removed_ids, scene_id)
     if applied_ids:
         try:
-            stash_api.add_tags_to_scene(scene_id, applied_ids)
+            await stash_api.add_tags_to_scene_async(scene_id, applied_ids)
         except Exception:
             _log.exception("Failed to apply scene tags %s to scene_id=%s", applied_ids, scene_id)
 
