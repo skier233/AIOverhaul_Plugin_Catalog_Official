@@ -1,13 +1,13 @@
 from stash_ai_server.recommendations.registry import recommender
 from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
-from stash_ai_server.utils.stash import fetch_scenes_by_tag_paginated
+from stash_ai_server.utils.stash_api import stash_api
 from typing import Dict, Any, List
 import random, time
 
 @recommender(
-    id='random_recent',
-    label='Random Recent',
-    description='Shuffled sample approximating recent scenes',
+    id='example_recommender_1.my_recommender',
+    label='Example Recommender 1',
+    description='Demo Recommender',
     contexts=[RecContext.global_feed, RecContext.similar_scene],
     config=[
         { 'name':'shuffle_span_s','label':'Shuffle Span (s)','type':'number','default':300,'min':5,'max':3600 },
@@ -22,7 +22,7 @@ import random, time
     supports_pagination=False,
     exposes_scores=False
 )
-async def random_recent(ctx: Dict[str, Any], request: RecommendationRequest):
+async def example_recommender_1(ctx: Dict[str, Any], request: RecommendationRequest):
     cfg = request.config or {}
     limit = request.limit or 40
     offset = request.offset or 0
@@ -35,7 +35,7 @@ async def random_recent(ctx: Dict[str, Any], request: RecommendationRequest):
     random_mode = cfg.get('random_mode', 'time_seed')
     debug_label = cfg.get('debug_label')
     fetch_limit = limit * overfetch_factor
-    scenes, approx_total, has_more = fetch_scenes_by_tag_paginated(932, offset, fetch_limit)
+    scenes, approx_total, has_more = stash_api.fetch_scenes_by_tag_paginated(932, offset, fetch_limit)
     if exclude_tags:
         def _allowed(sc):
             tag_ids = {t.get('id') for t in sc.get('tags', []) if isinstance(t, dict)}

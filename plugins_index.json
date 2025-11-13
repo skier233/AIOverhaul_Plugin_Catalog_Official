@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
-  "registryName": "builtin-dev",
-  "generatedAt": "2025-09-28T00:00:00Z",
+  "registryName": "builtin",
   "plugins": [
     {
       "name": "baseline_popularity_plugin",
@@ -28,15 +27,15 @@
       "manifest": "example_plugin/plugin.yml"
     },
     {
-      "name": "random_recent_plugin",
-      "humanName": "Random Recent",
+      "name": "example_recommender_1",
+      "humanName": "Example Recommender 1",
       "version": "0.1.0",
-      "description": "Random selection from recent scenes",
+      "description": "Demo Recommender",
       "dependsOn": [],
-      "serverLink": "https://github.com/example/random-recent",
+      "serverLink": "https://github.com/example/example_recommender_1",
       "requiredBackend": ">=0.0.0",
-      "path": "random_recent_plugin",
-      "manifest": "random_recent_plugin/plugin.yml"
+      "path": "example_recommender_1",
+      "manifest": "example_recommender_1/plugin.yml"
     },
     {
       "name": "skier_aitagging_plugin",

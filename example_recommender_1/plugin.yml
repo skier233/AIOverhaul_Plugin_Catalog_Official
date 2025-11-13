@@ -1,0 +1,8 @@
+name: example_recommender_1
+human_name: Example Recommender 1
+server_link: https://github.com/example/example_recommender_1
+version: 0.1.0
+required_backend: '>=0.0.0'
+files:
+  - recommender
+depends_on: []
