@@ -1,6 +1,6 @@
 from stash_ai_server.recommendations.registry import recommender
 from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
-from stash_ai_server.utils.stash import fetch_scenes_by_tag_paginated
+from stash_ai_server.utils.stash_api import stash_api
 
 @recommender(id='example_plugin.random', label='Example Random', contexts=[RecContext.global_feed])
 async def example_random(ctx: dict, req: RecommendationRequest):
@@ -13,7 +13,7 @@ async def example_random(ctx: dict, req: RecommendationRequest):
 
     # We purposely rely on API layer for offset semantics; handler returns already-sliced page.
     # Tag id 118 = sample corpus anchor; future: replace with popularity index query.
-    scenes, approx_total, has_more = fetch_scenes_by_tag_paginated(1508, offset, limit)
+    scenes, approx_total, has_more = stash_api.fetch_scenes_by_tag_paginated(1508, offset, limit)
     return {
         'scenes': scenes,
         'total': approx_total,
