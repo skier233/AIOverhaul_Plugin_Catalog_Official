@@ -9,6 +9,7 @@ from stash_ai_server.utils.stash_api import stash_api
 
 from .stash_handler import AI_tags_cache
 from .tag_config import SceneTagDurationRequirement, TagSettings, get_tag_configuration
+from . import stash_handler
 
 _log = logging.getLogger(__name__)
 
@@ -84,6 +85,9 @@ async def apply_scene_tags(
         if tag_id not in tags_to_add and tag_id in AI_tags_cache.values():
             tags_to_remove.add(tag_id)
 
+    # TODO: later make this configurable
+    if True:
+        tags_to_add.add(stash_handler.AI_Tagged_Tag_Id)
     # Avoid removing tags we plan to add again.
     tags_to_remove.difference_update(tags_to_add)
 

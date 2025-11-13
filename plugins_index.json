@@ -8,7 +8,7 @@
       "version": "0.1.0",
       "description": "Example Recommender 2 Demo",
       "dependsOn": [
-        "skier_aitagging_plugin"
+        "skier_aitagging"
       ],
       "serverLink": "https://github.com/example/example_recommender_2",
       "requiredBackend": ">=0.0.0",
@@ -38,15 +38,15 @@
       "manifest": "example_recommender_1/plugin.yml"
     },
     {
-      "name": "skier_aitagging_plugin",
+      "name": "skier_aitagging",
       "humanName": "Skier AI Tagging",
       "version": "0.2.0",
       "description": "AI tagging service providing metadata enrichment",
       "dependsOn": [],
       "serverLink": "https://github.com/example/ai-tagging",
       "requiredBackend": ">=0.0.0",
-      "path": "skier_aitagging_plugin",
-      "manifest": "skier_aitagging_plugin/plugin.yml",
+      "path": "skier_aitagging",
+      "manifest": "skier_aitagging/plugin.yml",
       "pip_dependencies": [
         "numpy==2.3.3"
       ]
@@ -61,6 +61,36 @@
       "requiredBackend": ">=0.0.0",
       "path": "slow_service_plugin",
       "manifest": "slow_service_plugin/plugin.yml"
+    },
+    {
+      "name": "personalized_tfidf",
+      "humanName": "Personalized TF-IDF Recommender",
+      "version": "0.1.0",
+      "description": "TF-IDF based personalized recommender system",
+      "dependsOn": ["skier_aitagging"],
+      "requiredBackend": ">=0.0.0",
+      "path": "personalized_tfidf",
+      "manifest": "personalized_tfidf/plugin.yml"
+    },
+    {
+      "name": "segment_similarity",
+      "humanName": "Segment Similarity Recommender",
+      "version": "0.1.0",
+      "description": "Recommend scenes whose tagged segments overlap with the parts you watched.",
+      "dependsOn": ["skier_aitagging"],
+      "requiredBackend": ">=0.0.0",
+      "path": "segment_similarity",
+      "manifest": "segment_similarity/plugin.yml"
+    },
+    {
+      "name": "performer_tag_hybrid",
+      "humanName": "Performer Tag Hybrid Recommender",
+      "version": "0.1.0",
+      "description": "Hybrid recommender using performer, AI-generated tags, and studio",
+      "dependsOn": ["skier_aitagging"],
+      "requiredBackend": ">=0.0.0",
+      "path": "performer_tag_hybrid",
+      "manifest": "performer_tag_hybrid/plugin.yml"
     }
   ]
 }

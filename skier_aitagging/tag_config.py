@@ -26,7 +26,7 @@ def _get_tag_suffix() -> str:
         with SessionLocal() as session:
             row = session.execute(
                 select(PluginSetting).where(
-                    PluginSetting.plugin_name == "skier_aitagging_plugin",
+                    PluginSetting.plugin_name == "skier_aitagging",
                     PluginSetting.key == "tag_suffix"
                 )
             ).scalar_one_or_none()
