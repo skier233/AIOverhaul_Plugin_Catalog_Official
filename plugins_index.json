@@ -41,15 +41,13 @@
       "name": "skier_aitagging",
       "humanName": "Skier AI Tagging",
       "version": "0.2.0",
-      "description": "AI tagging service providing metadata enrichment",
+      "description": "AI tagging of images and videos that generates time-based tags for scenes and markers in stash",
       "dependsOn": [],
-      "serverLink": "https://github.com/example/ai-tagging",
+      "serverLink": "https://github.com/skier233/nsfw_ai_model_server?tab=readme-ov-file#nsfw-ai-tagging-enhance-your-local-content-organization",
       "requiredBackend": ">=0.0.0",
       "path": "skier_aitagging",
       "manifest": "skier_aitagging/plugin.yml",
-      "pip_dependencies": [
-        "numpy==2.3.3"
-      ]
+      "pip_dependencies": []
     },
     {
       "name": "slow_service_plugin",
