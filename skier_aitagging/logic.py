@@ -9,10 +9,14 @@ from stash_ai_server.tasks.models import TaskRecord
 
 from .models import AIModelInfo, TagTimeFrame
 from .stash_handler import (
+    AI_Tagged_Tag_Id,
     add_error_tag_to_images,
     has_ai_tagged,
+    has_ai_reprocess,
     is_vr_scene,
     resolve_ai_tag_reference,
+    remove_reprocess_tag_from_images,
+    remove_reprocess_tag_from_scene,
 )
 from .http_handler import call_images_api, call_scene_api, get_active_scene_models
 from .utils import (
@@ -81,6 +85,7 @@ async def _apply_scene_markers_and_tags(
     service_name: str,
     scene_duration: float,
     existing_scene_tag_ids: Sequence[int] | None,
+    apply_ai_tagged_tag: bool,
 ):
     """Reload stored markers and tags for a scene and provide basic counts."""
 
@@ -93,6 +98,7 @@ async def _apply_scene_markers_and_tags(
         service_name=service_name,
         scene_duration=scene_duration,
         existing_scene_tag_ids=existing_scene_tag_ids,
+        apply_ai_tagged_tag=apply_ai_tagged_tag,
     )
     marker_count = sum(len(spans) for spans in markers_by_tag.values())
     applied_tags = len(tag_changes.get("applied", []))
@@ -127,8 +133,11 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
     """
     Tag images using batch /images endpoint.
     """
+    _log.info("Starting image tagging task for context: %s", ctx)
+    print("Starting22 image tagging task for context: %s" % ctx)
     raw_image_ids = get_selected_items(ctx)
     service: RemoteServiceBase = params["service"]
+    apply_ai_tagged_tag = getattr(service, "apply_ai_tagged_tag", True)
 
     image_ids: list[int] = []
     for raw in raw_image_ids:
@@ -148,9 +157,9 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
         }
 
     try:
-        image_paths = await stash_api.get_image_paths_async(image_ids)
+        image_metadata = await stash_api.get_image_paths_and_tags_async(image_ids)
     except Exception as exc:
-        _log.exception("Failed to fetch image paths for ids=%s", image_ids)
+        _log.exception("Failed to fetch image metadata for ids=%s", image_ids)
         detail = _short_error(str(exc) or exc.__class__.__name__)
         return {
             "status": "failed",
@@ -166,8 +175,15 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
     skipped_images: set[int] = set()
 
     valid_paths: dict[int, str] = {}
+    reprocess_request_ids: set[int] = set()
     for image_id in image_ids:
-        path = (image_paths or {}).get(image_id)
+        record = (image_metadata or {}).get(image_id) or {}
+        path = record.get("path") if isinstance(record, dict) else None
+        tags = record.get("tag_ids") if isinstance(record, dict) else None
+        print("Image ID %s has tags: %s" % (image_id, tags))
+        if has_ai_reprocess(tags):
+            print("Image ID %s has AI_Reprocess tag; scheduling reprocess" % image_id)
+            reprocess_request_ids.add(image_id)
         if not path:
             failure_reasons[image_id] = "file path unavailable"
             failed_images.add(image_id)
@@ -207,6 +223,10 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
             current_frame_interval=SCENE_FRAME_INTERVAL,
             current_threshold=SCENE_THRESHOLD,
         )
+
+        if image_id in reprocess_request_ids:
+            _log.info("AI_Reprocess tag present for image_id=%s; forcing reprocess", image_id)
+            should_reprocess = True
 
         if should_reprocess:
             remote_targets[image_id] = mutate_path_for_plugin(path, service.plugin_name)
@@ -267,6 +287,8 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
             continue
 
         normalized_ids = filter_enabled_tag_ids(stored_tag_ids, config)
+        if apply_ai_tagged_tag and AI_Tagged_Tag_Id:
+            normalized_ids = list(dict.fromkeys([*normalized_ids, AI_Tagged_Tag_Id]))
         tags_added_counts[image_id] = len(normalized_ids)
 
         if not normalized_ids and not stored_tag_ids:
@@ -286,6 +308,14 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
     failed_ids = sorted(failed_images)
     skipped_ids = sorted(skipped_images)
     success_count = len(processed_ids) - len(failed_ids)
+
+    reprocess_cleared = [
+        image_id
+        for image_id in processed_ids
+        if image_id in reprocess_request_ids and image_id not in failed_images
+    ]
+    if reprocess_cleared:
+        await remove_reprocess_tag_from_images(reprocess_cleared)
 
     status = "success"
     if failed_ids:
@@ -344,6 +374,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         }
 
     remote_scene_path = mutate_path_for_plugin(scene_path or "", service.plugin_name)
+    force_reprocess = has_ai_reprocess(scene_tags)
 
     try:
         historical_models = await get_scene_model_history_async(service=service.name, scene_id=scene_id)
@@ -376,6 +407,11 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         current_threshold=SCENE_THRESHOLD,
     )
 
+    if force_reprocess:
+        _log.info("AI_Reprocess tag present for scene_id=%s; forcing full reprocess", scene_id)
+        skip_categories = tuple()
+        should_reprocess = True
+
     try:
         if not should_reprocess:
             _log.info("Skipping remote tagging for scene_id=%s; existing data considered current", scene_id)
@@ -390,6 +426,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                 service_name=service.name,
                 scene_duration=scene_duration,
                 existing_scene_tag_ids=scene_tags,
+                apply_ai_tagged_tag=service.apply_ai_tagged_tag,
             )
             message = _format_scene_message(scene_id, applied_tags, removed_tags, marker_count)
             summary_parts = [f"Retrieved {marker_count} marker span(s) from storage"]
@@ -520,6 +557,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             service_name=service.name,
             scene_duration=scene_duration,
             existing_scene_tag_ids=scene_tags,
+            apply_ai_tagged_tag=service.apply_ai_tagged_tag,
         )
         message = _format_scene_message(scene_id, applied_tags, removed_tags, marker_count)
         summary_parts = [f"Processed scene with {marker_count} marker span(s)"]
@@ -527,6 +565,9 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             summary_parts.append(f"applied {applied_tags} scene tag(s)")
         if removed_tags:
             summary_parts.append(f"removed {removed_tags} scene tag(s)")
+
+        if force_reprocess:
+            await remove_reprocess_tag_from_scene(scene_id)
 
         return {
             "scene_id": scene_id,

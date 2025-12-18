@@ -8,6 +8,22 @@ from stash_ai_server.utils.stash_api import stash_api
 from . import logic
 
 
+def _coerce_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 class SkierAITaggingService(RemoteServiceBase):
     name = "AI_Tagging"
     description = "AI tagging and analysis service"
@@ -19,6 +35,7 @@ class SkierAITaggingService(RemoteServiceBase):
     def __init__(self) -> None:
         super().__init__()
         self._api_key: str | None = None
+        self.apply_ai_tagged_tag: bool = True
         self.reload_settings()
 
     def reload_settings(self) -> None:
@@ -29,6 +46,8 @@ class SkierAITaggingService(RemoteServiceBase):
         server_setting = cfg.get("server_url")
         if server_setting is not None:
             self.server_url = server_setting or None
+
+        self.apply_ai_tagged_tag = _coerce_bool(cfg.get("apply_ai_tagged_tag"), True)
 
     # ------------------------------------------------------------------
     # Image actions

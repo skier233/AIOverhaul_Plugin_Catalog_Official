@@ -21,6 +21,7 @@ async def apply_scene_tags(
     service_name: str,
     scene_duration: float,
     existing_scene_tag_ids: Sequence[int] | None = None,
+    apply_ai_tagged_tag: bool = True,
 ) -> dict[str, list[int]]:
     """Apply scene-level AI tags based on stored aggregates.
 
@@ -84,8 +85,7 @@ async def apply_scene_tags(
         if tag_id not in tags_to_add and tag_id in AI_tags_cache.values():
             tags_to_remove.add(tag_id)
 
-    # TODO: later make this configurable
-    if True:
+    if apply_ai_tagged_tag and stash_handler.AI_Tagged_Tag_Id:
         tags_to_add.add(stash_handler.AI_Tagged_Tag_Id)
     # Avoid removing tags we plan to add again.
     tags_to_remove.difference_update(tags_to_add)
