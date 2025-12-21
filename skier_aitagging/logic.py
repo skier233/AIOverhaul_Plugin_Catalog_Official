@@ -134,7 +134,6 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
     Tag images using batch /images endpoint.
     """
     _log.info("Starting image tagging task for context: %s", ctx)
-    print("Starting22 image tagging task for context: %s" % ctx)
     raw_image_ids = get_selected_items(ctx)
     service: RemoteServiceBase = params["service"]
     apply_ai_tagged_tag = getattr(service, "apply_ai_tagged_tag", True)
@@ -381,7 +380,6 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
     except Exception:
         _log.exception("Failed to load scene model history for scene_id=%s", scene_id)
         historical_models = ()
-
     if has_ai_tagged(scene_tags) and not historical_models:
         legacy_result = await LegacyAIVideoResult.try_load_from_scene_path(scene_path)
         if legacy_result is None:
