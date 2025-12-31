@@ -59,7 +59,7 @@ foreach ($file in $filesToCopy) {
     }
 }
 
-# Copy frontend JavaScript file to dist directory
+# Copy frontend JavaScript file to dist directory (for serving via /plugins/ route)
 $frontendSource = Join-Path $sourceDir "tag_list_editor.js"
 $stashAIServerDir = Join-Path (Join-Path $catalogDir "..") "Stash-AIServer"
 $frontendDistDir = Join-Path (Join-Path (Join-Path $stashAIServerDir "frontend") "dist") "plugins"
@@ -77,9 +77,17 @@ if (Test-Path $frontendSource) {
     }
     
     try {
+        # Copy to dist/plugins/pluginName/ (for /plugins/ route)
         Copy-Item -Path $frontendSource -Destination $frontendTarget -Force
         Write-Host "  [OK] tag_list_editor.js -> frontend/dist/plugins/$pluginName/" -ForegroundColor Green
         $copied++
+        
+        # Also ensure it's in the plugin directory itself (it should already be there from the main copy, but just in case)
+        $pluginTarget = Join-Path $targetDir "tag_list_editor.js"
+        if (-not (Test-Path $pluginTarget)) {
+            Copy-Item -Path $frontendSource -Destination $pluginTarget -Force
+            Write-Host "  [OK] tag_list_editor.js -> plugins/$pluginName/ (backup)" -ForegroundColor Green
+        }
     } catch {
         Write-Host "  [FAIL] tag_list_editor.js - $($_.Exception.Message)" -ForegroundColor Red
         $skipped++

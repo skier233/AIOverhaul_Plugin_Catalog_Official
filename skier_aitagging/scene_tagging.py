@@ -6,9 +6,8 @@ from typing import Sequence
 from stash_ai_server.db.ai_results_store import get_scene_tag_totals_async
 from stash_ai_server.utils.stash_api import stash_api
 
-from .stash_handler import AI_tags_cache
+from .stash_handler import get_ai_tags_cache, get_ai_tagged_tag_id
 from .tag_config import SceneTagDurationRequirement, TagSettings, get_tag_configuration
-from . import stash_handler
 
 _log = logging.getLogger(__name__)
 
@@ -55,8 +54,9 @@ async def apply_scene_tags(
         if not tag_name:
             return
 
-        if tag_name not in AI_tags_cache:
-            AI_tags_cache[tag_name] = tag_id
+        ai_cache = get_ai_tags_cache()
+        if tag_name not in ai_cache:
+            ai_cache[tag_name] = tag_id
 
         settings = config.resolve(tag_name)
         threshold = settings.required_scene_tag_duration.as_seconds(scene_duration)
@@ -81,12 +81,14 @@ async def apply_scene_tags(
         await _evaluate_tag(tag_id, duration)
 
     # Remove anything we manage that is currently on the scene and in our ai tag cache
+    ai_cache = get_ai_tags_cache()
     for tag_id in current_ai_tags:
-        if tag_id not in tags_to_add and tag_id in AI_tags_cache.values():
+        if tag_id not in tags_to_add and tag_id in ai_cache.values():
             tags_to_remove.add(tag_id)
 
-    if apply_ai_tagged_tag and stash_handler.AI_Tagged_Tag_Id:
-        tags_to_add.add(stash_handler.AI_Tagged_Tag_Id)
+    ai_tagged_id = get_ai_tagged_tag_id()
+    if apply_ai_tagged_tag and ai_tagged_id:
+        tags_to_add.add(ai_tagged_id)
     # Avoid removing tags we plan to add again.
     tags_to_remove.difference_update(tags_to_add)
 
