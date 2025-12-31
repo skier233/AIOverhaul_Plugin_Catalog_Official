@@ -14,11 +14,24 @@ _log = logging.getLogger(__name__)
 async def call_images_api(service: RemoteServiceBase, image_paths: list[str]) -> ImageResult | None:
     """Call the /images endpoint with a batch of image paths."""
     try:
+        # Get disabled tags from plugin's tag_config (tags that are not enabled)
+        excluded_tags = []
+        try:
+            from . import tag_config
+            tag_config_obj = tag_config.get_tag_configuration()
+            all_statuses = tag_config_obj.get_all_tag_statuses()
+            # Build list of disabled tags (tags where enabled is False)
+            excluded_tags = [tag_name for tag_name, enabled in all_statuses.items() if enabled is False]
+        except Exception as exc:
+            _log.warning("Failed to get disabled tags from tag_config: %s", exc)
+        
         payload = {
             "paths": image_paths,
             "threshold": 0.5,
             "return_confidence": False
         }
+        # Always include excluded_tags in payload, even if empty, for consistency
+        payload["excluded_tags"] = excluded_tags
         return await service.http.post(
             IMAGES_ENDPOINT,
             json=payload,
@@ -41,6 +54,17 @@ async def call_scene_api(
 ) -> VideoServerResponse | None:
     """Call the /scene endpoint for a single scene."""   
     try:
+        # Get disabled tags from plugin's tag_config (tags that are not enabled)
+        excluded_tags = []
+        try:
+            from . import tag_config
+            tag_config_obj = tag_config.get_tag_configuration()
+            all_statuses = tag_config_obj.get_all_tag_statuses()
+            # Build list of disabled tags (tags where enabled is False)
+            excluded_tags = [tag_name for tag_name, enabled in all_statuses.items() if enabled is False]
+        except Exception as exc:
+            _log.warning("Failed to get disabled tags from tag_config: %s", exc)
+        
         payload = {
             "path": scene_path,
             "frame_interval": frame_interval,
@@ -50,6 +74,8 @@ async def call_scene_api(
         }
         if skip_categories:
             payload["categories_to_skip"] = list(skip_categories)
+        # Always include excluded_tags in payload, even if empty, for consistency
+        payload["excluded_tags"] = excluded_tags
         return await service.http.post(
             SCENE_ENDPOINT,
             json=payload,
