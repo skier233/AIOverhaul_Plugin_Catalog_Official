@@ -9,7 +9,7 @@ from stash_ai_server.tasks.models import TaskRecord
 
 from .models import AIModelInfo, TagTimeFrame
 from .stash_handler import (
-    get_ai_tagged_tag_id,
+    AI_Tagged_Tag_Id,
     add_error_tag_to_images,
     has_ai_tagged,
     has_ai_reprocess,
@@ -286,7 +286,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
             continue
 
         normalized_ids = filter_enabled_tag_ids(stored_tag_ids, config)
-        ai_tagged_id = get_ai_tagged_tag_id()
+        ai_tagged_id = AI_Tagged_Tag_Id
         if apply_ai_tagged_tag and ai_tagged_id:
             normalized_ids = list(dict.fromkeys([*normalized_ids, ai_tagged_id]))
         tags_added_counts[image_id] = len(normalized_ids)
