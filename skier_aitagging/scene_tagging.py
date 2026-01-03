@@ -6,9 +6,8 @@ from typing import Sequence
 from stash_ai_server.db.ai_results_store import get_scene_tag_totals_async
 from stash_ai_server.utils.stash_api import stash_api
 
-from .stash_handler import AI_tags_cache
+from .stash_handler import AI_tags_cache, AI_Tagged_Tag_Id
 from .tag_config import SceneTagDurationRequirement, TagSettings, get_tag_configuration
-from . import stash_handler
 
 _log = logging.getLogger(__name__)
 
@@ -85,8 +84,9 @@ async def apply_scene_tags(
         if tag_id not in tags_to_add and tag_id in AI_tags_cache.values():
             tags_to_remove.add(tag_id)
 
-    if apply_ai_tagged_tag and stash_handler.AI_Tagged_Tag_Id:
-        tags_to_add.add(stash_handler.AI_Tagged_Tag_Id)
+    ai_tagged_id = AI_Tagged_Tag_Id
+    if apply_ai_tagged_tag and ai_tagged_id:
+        tags_to_add.add(ai_tagged_id)
     # Avoid removing tags we plan to add again.
     tags_to_remove.difference_update(tags_to_add)
 

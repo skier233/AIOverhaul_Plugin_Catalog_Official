@@ -44,6 +44,9 @@ def resolve_image_tag_id_from_label(label: str, config) -> int | None:
         _log.warning("Failed to resolve image tag label '%s': empty or invalid", label)
         return None
     settings = config.resolve(normalized)
+    # Check if tag is enabled (default to True if None for backward compatibility)
+    if settings.enabled is False:
+        return None
     stash_name = settings.stash_name or normalized
     if not stash_name:
         _log.warning("Failed to resolve image tag label '%s': no stash name found", label)
