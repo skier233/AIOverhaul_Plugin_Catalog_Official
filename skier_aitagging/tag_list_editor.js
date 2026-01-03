@@ -32,9 +32,28 @@
   waitForReact(function(React) {
     const PluginApi = w.PluginApi;
   
+  // Helper to get backend base URL from settings, with fallback to default
+  function getBackendBase() {
+    // Try AIDefaultBackendBase function first (reads from plugin settings)
+    if (typeof w.AIDefaultBackendBase === 'function') {
+      const base = w.AIDefaultBackendBase();
+      if (base) return base;
+    }
+    // Fall back to window.AI_BACKEND_URL (set by BackendBase.ts)
+    if (typeof w.AI_BACKEND_URL === 'string' && w.AI_BACKEND_URL) {
+      return w.AI_BACKEND_URL;
+    }
+    // Fall back to legacy AIBackendBase if set
+    if (w.AIBackendBase) {
+      return w.AIBackendBase;
+    }
+    // Default fallback
+    return 'http://localhost:4153';
+  }
+
   // Helper to make API calls
   function jfetch(url, options) {
-    const backendBase = w.AIBackendBase || 'http://localhost:4153';
+    const backendBase = getBackendBase();
     const fullUrl = url.startsWith('http') ? url : backendBase + url;
     return fetch(fullUrl, {
       ...options,
@@ -63,10 +82,30 @@
     
     const field = props.field;
     const pluginName = props.pluginName;
-    const backendBase = props.backendBase || (w.AIBackendBase || 'http://localhost:4153');
+    // Use props.backendBase if provided, otherwise get from settings
+    const backendBaseState = React.useState(function() {
+      return props.backendBase || getBackendBase();
+    });
+    const backendBase = backendBaseState[0];
+    const setBackendBase = backendBaseState[1];
     const savePluginSetting = props.savePluginSetting;
     const loadPluginSettings = props.loadPluginSettings;
     const setError = props.setError;
+    
+    // Listen for backend base URL updates from settings
+    React.useEffect(function() {
+      function handleBackendUpdate(e) {
+        const newBase = e.detail || getBackendBase();
+        setBackendBase(newBase);
+        console.log('[SkierAITagging] Backend base updated to:', newBase);
+      }
+      try {
+        w.addEventListener('AIBackendBaseUpdated', handleBackendUpdate);
+        return function() {
+          try { w.removeEventListener('AIBackendBaseUpdated', handleBackendUpdate); } catch {}
+        };
+      } catch {}
+    }, []);
     
     console.log('[SkierAITagging] Using backendBase:', backendBase);
     console.log('[SkierAITagging] savePluginSetting:', typeof savePluginSetting);

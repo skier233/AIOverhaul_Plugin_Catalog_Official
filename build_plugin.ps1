@@ -1,5 +1,38 @@
-# Build script to copy skier_aitagging plugin from catalog to Stash-AIServer
-# This script is gitignored and copies plugin files for testing
+<#
+.SYNOPSIS
+    Build script to copy skier_aitagging plugin from catalog to Stash-AIServer for testing.
+
+.DESCRIPTION
+    This script copies the skier_aitagging plugin from the AIOverhaul_Plugin_Catalog_Official
+    directory to the Stash-AIServer plugins directory. It also copies the frontend JavaScript
+    file to the frontend dist directory for serving via the /plugins/ route.
+
+.USAGE
+    Run this script from the AIOverhaul_Plugin_Catalog_Official directory:
+    
+        .\build_plugin.ps1
+    
+    Or from any location:
+    
+        .\AIOverhaul_Plugin_Catalog_Official\build_plugin.ps1
+
+.PREREQUISITES
+    - The script must be located in: AIOverhaul_Plugin_Catalog_Official\
+    - Source plugin directory must exist: AIOverhaul_Plugin_Catalog_Official\skier_aitagging\
+    - Stash-AIServer must exist as a sibling directory: ..\Stash-AIServer\
+    - Write permissions to Stash-AIServer\plugins\ and frontend\dist\plugins\
+
+.WHAT IT DOES
+    1. Copies all plugin files from catalog to Stash-AIServer\plugins\skier_aitagging\
+    2. Excludes .git, __pycache__, .pyc files, and .gitignore
+    3. Copies tag_list_editor.js to frontend\dist\plugins\skier_aitagging\ for web serving
+    4. Creates target directories if they don't exist
+    5. Overwrites existing files (uses -Force flag)
+
+.NOTES
+    This script is intended for local development/testing only.
+    The plugin name is hardcoded as "skier_aitagging" in the script.
+#>
 
 $ErrorActionPreference = "Stop"
 
@@ -106,3 +139,5 @@ if ($skipped -gt 0) {
 Write-Host ""
 Write-Host "Plugin is now available at: $targetDir" -ForegroundColor Cyan
 Write-Host "Frontend file is now available at: $frontendTarget" -ForegroundColor Cyan
+
+exit 0

@@ -144,98 +144,63 @@ class SkierAITaggingService(RemoteServiceBase):
     # ------------------------------------------------------------------
 
     async def get_available_tags_data(self, include_disabled: bool = False) -> dict:
-        """Get available tags grouped by model.
+        """Get available tags from CSV file.
         
         Args:
             include_disabled: If True, include all tags regardless of enabled status.
                            If False (default), only return enabled tags.
         
         Returns:
-            dict with 'tags' and 'models' keys, similar to AvailableTagsResponse
+            dict with 'tags' and 'models' keys. Tags are a flat list from CSV.
         """
-        import httpx
+        import csv
         import logging
         from . import tag_config
         
         _log = logging.getLogger(__name__)
         
-        if not self.server_url:
-            return {'tags': [], 'models': [], 'error': 'AI server URL not configured'}
-        
         # Get tag config
         tag_config_obj = tag_config.get_tag_configuration()
         
-        # Fetch tags from AI server
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                url = f"{self.server_url.rstrip('/')}/tags/available"
-                response = await client.get(url)
-                response.raise_for_status()
-                server_data = response.json()
-        except Exception as exc:
-            _log.warning("Failed to fetch tags from AI server: %s", exc)
-            return {'tags': [], 'models': [], 'error': f'Failed to fetch from AI server: {str(exc)}'}
-        
-        server_tags = server_data.get('tags', [])
-        server_models_data = server_data.get('models', [])
-        
-        # Build response
+        # Read tags directly from CSV file
         tags_list = []
-        models_list = []
-        seen_tags = set()
+        csv_path = tag_config_obj.source_path
         
-        for model_data in server_models_data:
-            model_name = model_data.get('name', '')
-            model_display_name = model_data.get('displayName', model_data.get('display', model_name))
-            model_tags = model_data.get('tags', [])
-            category = model_data.get('categories', [])
-            category_display = model_data.get('categoryDisplay', '')
-            is_active = model_data.get('active', True)
-            
-            # Filter tags by enabled status if include_disabled is False
-            filtered_model_tags = []
-            for tag in model_tags:
-                if isinstance(tag, dict):
-                    tag_name = tag.get('tag', tag.get('name', ''))
-                else:
-                    tag_name = str(tag)
+        if not csv_path.exists():
+            _log.warning("Tag settings CSV file does not exist at %s", csv_path)
+            return {'tags': [], 'models': []}
+        
+        try:
+            with csv_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                if reader.fieldnames is None:
+                    _log.warning("Tag settings CSV file is missing a header row")
+                    return {'tags': [], 'models': []}
                 
-                if include_disabled:
-                    # Include all tags
-                    filtered_model_tags.append(tag)
-                else:
-                    # Only include enabled tags
-                    is_enabled = tag_config_obj.get_tag_enabled_status(tag_name)
-                    if is_enabled:
-                        filtered_model_tags.append(tag)
-            
-            models_list.append({
-                'name': model_name,
-                'displayName': model_display_name,
-                'category': category,
-                'categoryDisplay': category_display,
-                'tagCount': len(filtered_model_tags),
-                'active': is_active,
-                'tags': filtered_model_tags
-            })
-            
-            for tag in filtered_model_tags:
-                if isinstance(tag, dict):
-                    tag_name = tag.get('tag', tag.get('name', ''))
-                else:
-                    tag_name = str(tag)
-                tag_key = f"{tag_name}::{model_name}"
-                if tag_key not in seen_tags:
-                    seen_tags.add(tag_key)
+                for row in reader:
+                    # Get tag name from CSV
+                    tag_name = (row.get('tag_name') or row.get('tag') or '').strip()
+                    
+                    # Skip default/empty rows
+                    if not tag_name or tag_name.lower() in {'', '*', 'default', '__default__'}:
+                        continue
+                    
+                    # Check if tag should be included based on enabled status
+                    if not include_disabled:
+                        is_enabled = tag_config_obj.get_tag_enabled_status(tag_name)
+                        if not is_enabled:
+                            continue
+                    
+                    # Add tag to list (normalized name is used as key, but we keep original for display)
                     tags_list.append({
                         'tag': tag_name,
-                        'model': model_name,
-                        'modelDisplayName': model_display_name,
-                        'category': category,
-                        'categoryDisplay': category_display
+                        'name': tag_name,  # For compatibility
                     })
+        except Exception as exc:
+            _log.exception("Failed to read tags from CSV file %s: %s", csv_path, exc)
+            return {'tags': [], 'models': [], 'error': f'Failed to read CSV: {str(exc)}'}
         
-        return {'tags': tags_list, 'models': models_list}
+        return {'tags': tags_list, 'models': []}
 
     def get_enabled_tags_list(self) -> list[str]:
         """Get list of enabled tag names (normalized, lowercase)."""
@@ -244,63 +209,16 @@ class SkierAITaggingService(RemoteServiceBase):
         return tag_config_obj.get_enabled_tags()
 
     async def get_all_tag_statuses(self) -> dict[str, bool]:
-        """Get all tag enabled statuses, including tags from AI server that aren't in CSV yet.
+        """Get all tag enabled statuses from CSV file.
         
         Returns:
             Dictionary mapping tag names (normalized, lowercase) to enabled status.
-            Tags not in CSV default to True (enabled).
         """
-        import httpx
-        import logging
         from . import tag_config
         
-        _log = logging.getLogger(__name__)
-        
-        # Get statuses from CSV
+        # Get statuses from CSV only (CSV is the source of truth)
         tag_config_obj = tag_config.get_tag_configuration()
-        csv_statuses = tag_config_obj.get_all_tag_statuses()
-        
-        # If we have a server URL, also fetch all tags from AI server and merge
-        if self.server_url:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    url = f"{self.server_url.rstrip('/')}/tags/available"
-                    response = await client.get(url)
-                    response.raise_for_status()
-                    server_data = response.json()
-                    
-                    # Get all unique tag names from server
-                    server_tags = server_data.get('tags', [])
-                    server_models_data = server_data.get('models', [])
-                    
-                    all_server_tags = set()
-                    for model_data in server_models_data:
-                        model_tags = model_data.get('tags', [])
-                        for tag in model_tags:
-                            if isinstance(tag, dict):
-                                tag_name = tag.get('tag', tag.get('name', ''))
-                            else:
-                                tag_name = str(tag)
-                            if tag_name:
-                                all_server_tags.add(tag_name.lower())
-                    
-                    # Merge: CSV statuses take precedence, but include all server tags (default True)
-                    merged_statuses = {}
-                    for tag_name in all_server_tags:
-                        if tag_name in csv_statuses:
-                            merged_statuses[tag_name] = csv_statuses[tag_name]
-                        else:
-                            # Tag not in CSV, default to enabled (True)
-                            merged_statuses[tag_name] = True
-                    
-                    return merged_statuses
-            except Exception as exc:
-                _log.warning("Failed to fetch tags from AI server for status merge: %s", exc)
-                # Fall back to CSV-only statuses
-                return csv_statuses
-        
-        # No server URL, just return CSV statuses
-        return csv_statuses
+        return tag_config_obj.get_all_tag_statuses()
 
     def update_tag_enabled_status(self, tag_statuses: dict[str, bool] | None = None, enabled_tags: list[str] | None = None, disabled_tags: list[str] | None = None) -> dict:
         """Update enabled status for tags.
