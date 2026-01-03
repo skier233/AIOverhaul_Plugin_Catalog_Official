@@ -256,3 +256,8 @@ class SkierAITaggingService(RemoteServiceBase):
 
 def register():
     services.register(SkierAITaggingService())
+    
+    # Register plugin router for API endpoints
+    from stash_ai_server.plugin_runtime import loader as plugin_loader
+    from . import api_endpoints
+    plugin_loader.register_plugin_router('skier_aitagging', api_endpoints.register_routes())

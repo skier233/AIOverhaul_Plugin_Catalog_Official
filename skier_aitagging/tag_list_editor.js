@@ -390,12 +390,10 @@
   }
   
     // Store globally so PluginSettings can access it
-    // Register with multiple naming conventions for compatibility
-    w.SkierAITaggingTagListEditor = createTagListEditorComponent; // Legacy naming
+    // Register with standard naming conventions
     w.tag_list_editor_Renderer = createTagListEditorComponent; // Standard naming convention
     w.skier_aitagging_tag_list_editor_Renderer = createTagListEditorComponent; // Plugin-specific naming
-    console.log('[SkierAITagging] Component registered to multiple names:', {
-      SkierAITaggingTagListEditor: typeof w.SkierAITaggingTagListEditor,
+    console.log('[SkierAITagging] Component registered to standard names:', {
       tag_list_editor_Renderer: typeof w.tag_list_editor_Renderer,
       skier_aitagging_tag_list_editor_Renderer: typeof w.skier_aitagging_tag_list_editor_Renderer
     });
