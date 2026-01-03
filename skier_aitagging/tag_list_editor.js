@@ -13,16 +13,13 @@
     function check() {
       const PluginApi = w.PluginApi;
       if (PluginApi && PluginApi.React) {
-        console.log('[SkierAITagging] PluginApi and React now available');
         callback(PluginApi.React);
-      } else {
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(check, 100);
         } else {
-          console.error('[SkierAITagging] PluginApi or React not available after', maxAttempts, 'attempts');
+          attempts++;
+          if (attempts < maxAttempts) {
+            setTimeout(check, 100);
+          }
         }
-      }
     }
     
     check();
@@ -76,10 +73,6 @@
   
   // Create the TagListEditor component
   function createTagListEditorComponent(props) {
-    console.log('[SkierAITagging] createTagListEditorComponent called with props:', props);
-    console.log('[SkierAITagging] field.type:', props.field ? props.field.type : 'missing');
-    console.log('[SkierAITagging] pluginName:', props.pluginName);
-    
     const field = props.field;
     const pluginName = props.pluginName;
     // Use props.backendBase if provided, otherwise get from settings
@@ -97,7 +90,6 @@
       function handleBackendUpdate(e) {
         const newBase = e.detail || getBackendBase();
         setBackendBase(newBase);
-        console.log('[SkierAITagging] Backend base updated to:', newBase);
       }
       try {
         w.addEventListener('AIBackendBaseUpdated', handleBackendUpdate);
@@ -107,26 +99,24 @@
       } catch {}
     }, []);
     
-    console.log('[SkierAITagging] Using backendBase:', backendBase);
-    console.log('[SkierAITagging] savePluginSetting:', typeof savePluginSetting);
-    console.log('[SkierAITagging] loadPluginSettings:', typeof loadPluginSettings);
-    console.log('[SkierAITagging] setError:', typeof setError);
-    
     const modalOpenState = React.useState(false);
     const modalOpen = modalOpenState[0];
     const setModalOpen = modalOpenState[1];
     
-    const availableTagsState = React.useState([]);
-    const availableTags = availableTagsState[0];
-    const setAvailableTags = availableTagsState[1];
+    // Full tag settings state - map of normalized tag name to settings object
+    const tagSettingsState = React.useState({});
+    const tagSettings = tagSettingsState[0];
+    const setTagSettings = tagSettingsState[1];
     
-    const availableModelsState = React.useState([]);
-    const availableModels = availableModelsState[0];
-    const setAvailableModels = availableModelsState[1];
+    // Default values from __default__ row
+    const defaultsState = React.useState({});
+    const defaults = defaultsState[0];
+    const setDefaults = defaultsState[1];
     
-    const excludedTagsState = React.useState([]);
-    const excludedTags = excludedTagsState[0];
-    const setExcludedTags = excludedTagsState[1];
+    // Expanded/collapsed sections (start collapsed by default)
+    const expandedSectionsState = React.useState(new Set());
+    const expandedSections = expandedSectionsState[0];
+    const setExpandedSections = expandedSectionsState[1];
     
     const loadingState = React.useState(false);
     const loading = loadingState[0];
@@ -135,155 +125,172 @@
     const savingState = React.useState(false);
     const saving = savingState[0];
     const setSaving = savingState[1];
-    
-    const expandedModelsState = React.useState(new Set());
-    const expandedModels = expandedModelsState[0];
-    const setExpandedModels = expandedModelsState[1];
-
-    const csvDataState = React.useState(null);
-    const csvData = csvDataState[0];
-    const setCsvData = csvDataState[1];
 
     const loadTagData = React.useCallback(async function() {
-      console.log('[SkierAITagging] loadTagData called for plugin:', pluginName);
       setLoading(true);
       try {
-        // Use /available and /statuses endpoints for CSV-based mode
+        // Use /available endpoint which now returns full tag settings
         const availableUrl = `/api/v1/plugins/settings/${pluginName}/tags/available`;
-        const statusesUrl = `/api/v1/plugins/settings/${pluginName}/tags/statuses`;
         
-        console.log('[SkierAITagging] Fetching from:', availableUrl, statusesUrl);
+        const availableResponse = await jfetch(availableUrl);
         
-        const [availableResponse, statusesResponse] = await Promise.all([
-          jfetch(availableUrl),
-          jfetch(statusesUrl)
-        ]);
-        
-        console.log('[SkierAITagging] Available response:', availableResponse);
-        console.log('[SkierAITagging] Statuses response:', statusesResponse);
-        
-        // Extract tags from available endpoint (flat list from CSV)
+        // Extract tags and defaults
         const tags = availableResponse.tags || [];
-        const statuses = statusesResponse.statuses || {};
+        const defaultsData = availableResponse.defaults || {};
         
-        console.log('[SkierAITagging] Tags count:', tags.length);
-        console.log('[SkierAITagging] Statuses count:', Object.keys(statuses).length);
-        
-        // Build excluded list from statuses (tags that are disabled)
-        const excludedList = [];
+        // Build tag settings map from tags
+        const settingsMap = {};
         tags.forEach(function(tagInfo) {
           const tagName = tagInfo.tag || tagInfo.name || '';
           const normalized = tagName.toLowerCase();
-          // Tag is excluded if status is False
-          if (statuses[normalized] === false) {
-            excludedList.push(normalized);
-          }
+          settingsMap[normalized] = {
+            tagName: tagName,
+            category: tagInfo.category || 'Other',
+            enabled: tagInfo.enabled !== false, // Default to true
+            markers_enabled: tagInfo.markers_enabled !== false, // Default to true
+            required_scene_tag_duration: tagInfo.required_scene_tag_duration || '',
+            min_marker_duration: tagInfo.min_marker_duration || '',
+            max_gap: tagInfo.max_gap || '',
+          };
         });
         
-        console.log('[SkierAITagging] Excluded tags count:', excludedList.length);
-        
-        setAvailableTags(tags);
-        setAvailableModels([]); // Not using models for CSV-based view
-        setExcludedTags(excludedList);
-        setExpandedModels(new Set());
+        setTagSettings(settingsMap);
+        setDefaults(defaultsData);
       } catch (e) {
-        console.error('[SkierAITagging] Failed to load tag data:', e);
-        console.error('[SkierAITagging] Error stack:', e.stack);
         if (setError) setError(e.message || 'Failed to load tag data');
-        setAvailableTags([]);
-        setAvailableModels([]);
-        setExcludedTags([]);
+        setTagSettings({});
+        setDefaults({});
       } finally {
         setLoading(false);
-        console.log('[SkierAITagging] loadTagData completed');
       }
     }, [pluginName, setError]);
 
-    const saveExcludedTags = React.useCallback(async function() {
-      console.log('[SkierAITagging] saveExcludedTags called');
-      console.log('[SkierAITagging] Excluded tags to save:', excludedTags);
-      console.log('[SkierAITagging] Available tags count:', availableTags.length);
+    const saveTagSettings = React.useCallback(async function() {
+      console.log('[SkierAITagging] Tag settings to save:', tagSettings);
       
       setSaving(true);
       try {
-        // Build tag_statuses dict: tag name (normalized) -> enabled (not excluded)
-        const tagStatuses = {};
-        availableTags.forEach(function(tagInfo) {
-          const tagName = tagInfo.tag || tagInfo.name || '';
-          const normalized = tagName.toLowerCase();
-          // Tag is enabled if it's NOT in excludedTags
-          tagStatuses[normalized] = excludedTags.indexOf(normalized) < 0;
+        // Build tag_settings dict for API
+        const settingsToSave = {};
+        Object.keys(tagSettings).forEach(function(normalized) {
+          const settings = tagSettings[normalized];
+          settingsToSave[normalized] = {
+            enabled: settings.enabled,
+            markers_enabled: settings.markers_enabled,
+            required_scene_tag_duration: settings.required_scene_tag_duration || null,
+            min_marker_duration: settings.min_marker_duration ? parseFloat(settings.min_marker_duration) : null,
+            max_gap: settings.max_gap ? parseFloat(settings.max_gap) : null,
+          };
         });
         
-        console.log('[SkierAITagging] Tag statuses to save:', tagStatuses);
-        
-        const saveUrl = `/api/v1/plugins/settings/${pluginName}/tags/statuses`;
-        console.log('[SkierAITagging] Saving statuses to:', saveUrl);
+        const saveUrl = `/api/v1/plugins/settings/${pluginName}/tags/settings`;
         
         const result = await jfetch(saveUrl, {
           method: 'PUT',
           body: {
-            tag_statuses: tagStatuses
+            tag_settings: settingsToSave
           }
         });
         
-        console.log('[SkierAITagging] Save result:', result);
-        
         setModalOpen(false);
         if (loadPluginSettings) {
-          console.log('[SkierAITagging] Reloading plugin settings...');
           await loadPluginSettings(pluginName);
         }
-        console.log('[SkierAITagging] Save completed successfully');
       } catch (e) {
-        console.error('[SkierAITagging] Failed to save excluded tags:', e);
-        console.error('[SkierAITagging] Error stack:', e.stack);
-        if (setError) setError(e.message || 'Failed to save excluded tags');
+        if (setError) setError(e.message || 'Failed to save tag settings');
       } finally {
         setSaving(false);
-        console.log('[SkierAITagging] saveExcludedTags completed');
       }
-    }, [pluginName, excludedTags, availableTags, loadPluginSettings, setError]);
+    }, [pluginName, tagSettings, loadPluginSettings, setError]);
 
     const wrap = { position: 'relative', padding: '4px 4px 6px', border: '1px solid #2a2a2a', borderRadius: 4, background: '#101010' };
     const smallBtn = { fontSize: 11, padding: '4px 8px', background: '#2a2a2a', color: '#eee', border: '1px solid #444', borderRadius: 3, cursor: 'pointer' };
     const labelTitle = field && field.description ? String(field.description) : undefined;
     const labelEl = React.createElement('span', { title: labelTitle }, field.label || field.key);
 
-    function toggleTag(tagName) {
-      setExcludedTags(function(prev) {
-        const normalized = tagName.toLowerCase();
-        if (prev.indexOf(normalized) >= 0) {
-          return prev.filter(function(t) { return t !== normalized; });
-        } else {
-          return prev.concat([normalized]);
+    // Helper functions
+    function updateTagSetting(normalized, field, value) {
+      setTagSettings(function(prev) {
+        const updated = { ...prev };
+        if (!updated[normalized]) {
+          updated[normalized] = {};
         }
+        updated[normalized] = { ...updated[normalized], [field]: value };
+        return updated;
       });
     }
+
+    function toggleSection(category) {
+      setExpandedSections(function(prev) {
+        const newSet = new Set(prev);
+        if (newSet.has(category)) {
+          newSet.delete(category);
+        } else {
+          newSet.add(category);
+        }
+        return newSet;
+      });
+    }
+
+    function toggleCategoryAll(category, enabled) {
+      setTagSettings(function(prev) {
+        const updated = { ...prev };
+        Object.keys(updated).forEach(function(normalized) {
+          if (updated[normalized].category === category) {
+            updated[normalized] = { ...updated[normalized], enabled: enabled };
+          }
+        });
+        return updated;
+      });
+    }
+
+    function isCategoryAllEnabled(category) {
+      const categoryTags = Object.values(tagSettings).filter(function(s) { return s.category === category; });
+      if (categoryTags.length === 0) return false;
+      return categoryTags.every(function(s) { return s.enabled; });
+    }
+
+    function getCategoryEnabledCount(category) {
+      return Object.values(tagSettings).filter(function(s) { return s.category === category && s.enabled; }).length;
+    }
+
+    function getCategoryTotalCount(category) {
+      return Object.values(tagSettings).filter(function(s) { return s.category === category; }).length;
+    }
     
-    // Sort tags alphabetically
-    const sortedTags = availableTags.slice().sort(function(a, b) {
-      const nameA = (a.tag || a.name || '').toLowerCase();
-      const nameB = (b.tag || b.name || '').toLowerCase();
-      return nameA.localeCompare(nameB);
+    // Group tags by category
+    const tagsByCategory = {};
+    Object.keys(tagSettings).forEach(function(normalized) {
+      const settings = tagSettings[normalized];
+      const category = settings.category || 'Other';
+      if (!tagsByCategory[category]) {
+        tagsByCategory[category] = [];
+      }
+      tagsByCategory[category].push({ normalized: normalized, settings: settings });
     });
 
-    console.log('[SkierAITagging] Rendering TagListEditor component');
-    console.log('[SkierAITagging] Modal open:', modalOpen);
-    console.log('[SkierAITagging] Loading:', loading);
-    console.log('[SkierAITagging] Available tags:', availableTags.length);
-    
+    // Sort tags within each category
+    Object.keys(tagsByCategory).forEach(function(category) {
+      tagsByCategory[category].sort(function(a, b) {
+        return a.settings.tagName.localeCompare(b.settings.tagName);
+      });
+    });
+
+    // Category order
+    const categoryOrder = ['Sexual Actions', 'Body Parts', 'BDSM', 'Positions', 'Other'];
+    const sortedCategories = categoryOrder.filter(function(cat) { return tagsByCategory[cat] && tagsByCategory[cat].length > 0; })
+      .concat(Object.keys(tagsByCategory).filter(function(cat) { return categoryOrder.indexOf(cat) < 0; }));
+
     return React.createElement(React.Fragment, null,
       React.createElement('div', { style: wrap },
         React.createElement('div', { style: { fontSize: 12, marginBottom: 6 } }, labelEl),
         React.createElement('button', {
           style: smallBtn,
           onClick: function() {
-            console.log('[SkierAITagging] Edit Tags button clicked');
             setModalOpen(true);
             loadTagData();
           }
-        }, 'Edit Tags')
+        }, 'Open Tagging Configuration Editor')
       ),
       modalOpen && React.createElement('div', {
         style: {
@@ -329,43 +336,211 @@
           ),
           React.createElement('div', {
             style: { fontSize: 11, color: '#aaa', marginBottom: 16, lineHeight: 1.4, padding: '0 4px' }
-          }, 'Toggle tags on or off. Unchecked tags will be excluded from tag generation. Changes are saved to tag_settings.csv.'),
+          }, 'Configure tag settings. Unchecked tags will be excluded from tag generation. Changes are saved to tag_settings.csv.'),
           loading ? React.createElement('div', {
             style: { padding: 40, textAlign: 'center', fontSize: 12, opacity: 0.7 }
           }, 'Loading tags from CSV...') :
-          availableTags.length === 0 ? React.createElement('div', {
+          Object.keys(tagSettings).length === 0 ? React.createElement('div', {
             style: { padding: 40, textAlign: 'center', fontSize: 12, opacity: 0.7 }
           }, 'No tags available in tag_settings.csv.') :
           React.createElement(React.Fragment, null,
             React.createElement('div', {
-              style: { flex: 1, overflow: 'auto', border: '1px solid #333', borderRadius: 4, padding: 8, background: '#111', marginBottom: 16 }
+              style: { flex: 1, overflow: 'auto', border: '1px solid #333', borderRadius: 4, padding: 8, background: '#111', marginBottom: 16, maxHeight: '60vh' }
             },
-              sortedTags.map(function(tagInfo) {
-                const tagName = tagInfo.tag || tagInfo.name || '';
-                const normalized = tagName.toLowerCase();
-                const isExcluded = excludedTags.indexOf(normalized) >= 0;
+              sortedCategories.map(function(category) {
+                const categoryTags = tagsByCategory[category] || [];
+                const isExpanded = expandedSections.has(category);
+                const allEnabled = isCategoryAllEnabled(category);
+                const enabledCount = getCategoryEnabledCount(category);
+                const totalCount = getCategoryTotalCount(category);
                 
-                return React.createElement('label', {
-                  key: normalized,
-                  style: {
-                    display: 'flex',
-                    alignItems: 'center',
-                    padding: '6px 8px',
-                    fontSize: 11,
-                    cursor: 'pointer',
-                    borderRadius: 3,
-                    marginBottom: 2
-                  },
-                  onMouseEnter: function(e) { e.currentTarget.style.background = '#1a1a1a'; },
-                  onMouseLeave: function(e) { e.currentTarget.style.background = 'transparent'; }
+                return React.createElement('div', {
+                  key: category,
+                  style: { marginBottom: 8, border: '1px solid #2a2a2a', borderRadius: 4, background: '#151515' }
                 },
-                  React.createElement('input', {
-                    type: 'checkbox',
-                    checked: !isExcluded,
-                    onChange: function() { toggleTag(tagName); },
-                    style: { marginRight: 8 }
-                  }),
-                  React.createElement('span', { style: { color: isExcluded ? '#666' : '#eee' } }, tagName)
+                  // Section header
+                  React.createElement('div', {
+                    style: {
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '8px 12px',
+                      background: '#1a1a1a',
+                      borderBottom: isExpanded ? '1px solid #2a2a2a' : 'none',
+                      cursor: 'pointer',
+                      userSelect: 'none'
+                    },
+                    onClick: function() { toggleSection(category); }
+                  },
+                    React.createElement('span', {
+                      style: { marginRight: 8, fontSize: 12, fontWeight: 'bold', color: '#ddd' }
+                    }, isExpanded ? '▼' : '▶'),
+                    React.createElement('span', {
+                      style: { flex: 1, fontSize: 13, fontWeight: 'bold', color: '#eee' }
+                    }, category),
+                    React.createElement('span', {
+                      style: { fontSize: 11, color: '#999', marginRight: 12 }
+                    }, enabledCount + '/' + totalCount),
+                    React.createElement('button', {
+                      style: Object.assign({}, smallBtn, {
+                        fontSize: 10,
+                        padding: '2px 6px',
+                        background: allEnabled ? '#2d5a3d' : '#2a2a2a'
+                      }),
+                      onClick: function(e) {
+                        e.stopPropagation();
+                        toggleCategoryAll(category, !allEnabled);
+                      }
+                    }, allEnabled ? 'Uncheck All' : 'Check All')
+                  ),
+                  // Section content
+                  isExpanded && React.createElement('div', {
+                    style: { padding: '4px 0' }
+                  },
+                    categoryTags.map(function(tagData) {
+                      const normalized = tagData.normalized;
+                      const settings = tagData.settings;
+                      const tagName = settings.tagName;
+                      const isEnabled = settings.enabled;
+                      const isDisabled = !isEnabled;
+                      
+                      // Get default value for required_scene_tag_duration
+                      const defaultReqDuration = defaults.required_scene_tag_duration || '15';
+                      const showDefaultReqDuration = !settings.required_scene_tag_duration;
+                      
+                      return React.createElement('div', {
+                        key: normalized,
+                        style: {
+                          padding: '6px 12px',
+                          borderBottom: '1px solid #1a1a1a',
+                          background: isDisabled ? '#0f0f0f' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '12px',
+                          flexWrap: 'wrap'
+                        }
+                      },
+                        // Enabled checkbox
+                        React.createElement('input', {
+                          type: 'checkbox',
+                          checked: isEnabled,
+                          onChange: function(e) {
+                            updateTagSetting(normalized, 'enabled', e.target.checked);
+                          },
+                          style: { cursor: 'pointer', flexShrink: 0 }
+                        }),
+                        // Tag name (bold)
+                        React.createElement('span', {
+                          style: {
+                            fontSize: 12,
+                            fontWeight: 'bold',
+                            color: isDisabled ? '#666' : '#ddd',
+                            minWidth: '120px',
+                            flexShrink: 0
+                          }
+                        }, tagName),
+                        // Inline controls
+                        React.createElement('div', {
+                          style: {
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            flex: 1,
+                            opacity: isDisabled ? 0.5 : 1,
+                            flexWrap: 'wrap'
+                          }
+                        },
+                          // Markers enabled
+                          React.createElement('label', {
+                            style: { display: 'flex', alignItems: 'center', fontSize: 11 }
+                          },
+                            React.createElement('input', {
+                              type: 'checkbox',
+                              checked: settings.markers_enabled,
+                              disabled: isDisabled,
+                              onChange: function(e) {
+                                updateTagSetting(normalized, 'markers_enabled', e.target.checked);
+                              },
+                              style: { marginRight: 6, cursor: isDisabled ? 'not-allowed' : 'pointer' }
+                            }),
+                            React.createElement('span', { style: { color: '#aaa' } }, 'Markers')
+                          ),
+                          // Required scene tag duration
+                          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+                            React.createElement('span', {
+                              style: { fontSize: 10, color: '#999', whiteSpace: 'nowrap' }
+                            }, 'Req. Duration:'),
+                            React.createElement('input', {
+                              type: 'text',
+                              value: settings.required_scene_tag_duration || '',
+                              disabled: isDisabled,
+                              placeholder: showDefaultReqDuration ? defaultReqDuration : '',
+                              onChange: function(e) {
+                                updateTagSetting(normalized, 'required_scene_tag_duration', e.target.value);
+                              },
+                              style: {
+                                width: '60px',
+                                padding: '2px 4px',
+                                fontSize: 11,
+                                background: isDisabled ? '#1a1a1a' : '#222',
+                                border: '1px solid #333',
+                                color: showDefaultReqDuration && !settings.required_scene_tag_duration ? '#666' : '#ddd',
+                                fontStyle: showDefaultReqDuration && !settings.required_scene_tag_duration ? 'italic' : 'normal',
+                                cursor: isDisabled ? 'not-allowed' : 'text'
+                              }
+                            })
+                          ),
+                          // Min marker duration
+                          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+                            React.createElement('span', {
+                              style: { fontSize: 10, color: '#999', whiteSpace: 'nowrap' }
+                            }, 'Min Duration:'),
+                            React.createElement('input', {
+                              type: 'number',
+                              value: settings.min_marker_duration || '',
+                              disabled: isDisabled,
+                              placeholder: defaults.min_marker_duration || '',
+                              onChange: function(e) {
+                                updateTagSetting(normalized, 'min_marker_duration', e.target.value);
+                              },
+                              style: {
+                                width: '50px',
+                                padding: '2px 4px',
+                                fontSize: 11,
+                                background: isDisabled ? '#1a1a1a' : '#222',
+                                border: '1px solid #333',
+                                color: '#ddd',
+                                cursor: isDisabled ? 'not-allowed' : 'text'
+                              }
+                            })
+                          ),
+                          // Max gap
+                          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+                            React.createElement('span', {
+                              style: { fontSize: 10, color: '#999', whiteSpace: 'nowrap' }
+                            }, 'Max Gap:'),
+                            React.createElement('input', {
+                              type: 'number',
+                              value: settings.max_gap || '',
+                              disabled: isDisabled,
+                              placeholder: defaults.max_gap || '',
+                              onChange: function(e) {
+                                updateTagSetting(normalized, 'max_gap', e.target.value);
+                              },
+                              style: {
+                                width: '50px',
+                                padding: '2px 4px',
+                                fontSize: 11,
+                                background: isDisabled ? '#1a1a1a' : '#222',
+                                border: '1px solid #333',
+                                color: '#ddd',
+                                cursor: isDisabled ? 'not-allowed' : 'text'
+                              }
+                            })
+                          )
+                        )
+                      );
+                    })
+                  )
                 );
               })
             ),
@@ -379,7 +554,7 @@
               }, 'Cancel'),
               React.createElement('button', {
                 style: Object.assign({}, smallBtn, { background: saving ? '#444' : '#2d5a3d', borderColor: saving ? '#555' : '#4a7c59' }),
-                onClick: saveExcludedTags,
+                onClick: saveTagSettings,
                 disabled: saving
               }, saving ? 'Saving...' : 'Save')
             )
@@ -393,62 +568,39 @@
     // Register with standard naming conventions
     w.tag_list_editor_Renderer = createTagListEditorComponent; // Standard naming convention
     w.skier_aitagging_tag_list_editor_Renderer = createTagListEditorComponent; // Plugin-specific naming
-    console.log('[SkierAITagging] Component registered to standard names:', {
-      tag_list_editor_Renderer: typeof w.tag_list_editor_Renderer,
-      skier_aitagging_tag_list_editor_Renderer: typeof w.skier_aitagging_tag_list_editor_Renderer
-    });
     
     // Try to patch PluginSettings dynamically
     function patchPluginSettings() {
-      console.log('[SkierAITagging] patchPluginSettings called');
-      console.log('[SkierAITagging] AIPluginSettings available:', !!w.AIPluginSettings);
-      console.log('[SkierAITagging] PluginApi.patch available:', !!PluginApi.patch);
-      
       // Wait for PluginSettings to be available
       if (!w.AIPluginSettings) {
-        console.log('[SkierAITagging] AIPluginSettings not yet available, retrying in 100ms...');
         setTimeout(patchPluginSettings, 100);
         return;
       }
       
-      console.log('[SkierAITagging] AIPluginSettings found, attempting to patch FieldRenderer...');
-      
       // Try to use PluginApi.patch if available
       if (PluginApi.patch && PluginApi.patch.before) {
         try {
-          console.log('[SkierAITagging] Attempting to patch PluginSettings.FieldRenderer using PluginApi.patch.before');
           // This won't work directly since FieldRenderer is internal, but we can try
           // The real solution is PluginSettings needs to check for our component
-          console.log('[SkierAITagging] PluginApi.patch.before available but FieldRenderer is internal');
         } catch (e) {
-          console.error('[SkierAITagging] Error patching:', e);
         }
       }
       
       // Store a flag that PluginSettings can check
       w.SkierAITaggingTagListEditorReady = true;
-      console.log('[SkierAITagging] Set window.SkierAITaggingTagListEditorReady = true');
-      console.log('[SkierAITagging] Component function:', w.SkierAITaggingTagListEditor);
-      console.log('[SkierAITagging] NOTE: PluginSettings.tsx FieldRenderer must check for tag_list_editor type and use window.SkierAITaggingTagListEditor');
     }
     
     // Try patching immediately
-    console.log('[SkierAITagging] Initial patch attempt...');
     patchPluginSettings();
     
     // Also listen for the ready event
     w.addEventListener('AIPluginSettingsReady', function() {
-      console.log('[SkierAITagging] AIPluginSettingsReady event received');
       patchPluginSettings();
     });
     
     // Also try after a delay
     setTimeout(function() {
-      console.log('[SkierAITagging] Delayed patch attempt (2s)...');
       patchPluginSettings();
     }, 2000);
-    
-    console.log('[SkierAITagging] Tag list editor support loaded and registered');
-    console.log('[SkierAITagging] To verify: window.SkierAITaggingTagListEditor =', typeof w.SkierAITaggingTagListEditor);
   }); // End of waitForReact callback
 })();

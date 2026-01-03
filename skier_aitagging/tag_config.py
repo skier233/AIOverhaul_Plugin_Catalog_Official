@@ -276,6 +276,126 @@ class TagConfiguration:
             _log.exception("Failed to write updated CSV file: %s", exc)
             raise
 
+    def update_tag_settings(self, tag_settings_map: Dict[str, Dict]) -> None:
+        """Update full tag settings for tags in the CSV file.
+        
+        Args:
+            tag_settings_map: Dictionary mapping tag names (lowercase) to settings dict with keys:
+                - enabled: bool
+                - markers_enabled: bool (optional)
+                - required_scene_tag_duration: str (optional, e.g., "15", "15s", "35%")
+                - min_marker_duration: float (optional)
+                - max_gap: float (optional)
+        """
+        import tempfile
+        import os
+        
+        if not self._source_path.exists():
+            _log.warning("Cannot update tag settings: CSV file does not exist at %s", self._source_path)
+            return
+        
+        # Read existing CSV
+        rows = []
+        fieldnames = None
+        try:
+            with self._source_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                fieldnames = list(reader.fieldnames) if reader.fieldnames else []
+                
+                # Ensure all required columns exist
+                required_cols = ['enabled', 'markers_enabled', 'RequiredSceneTagDuration', 'min_marker_duration', 'max_gap']
+                for col in required_cols:
+                    if col not in fieldnames:
+                        # Insert after appropriate column
+                        if col == 'enabled' and 'tag_name' in fieldnames:
+                            fieldnames.insert(fieldnames.index('tag_name') + 1, col)
+                        elif col == 'markers_enabled' and 'enabled' in fieldnames:
+                            fieldnames.insert(fieldnames.index('enabled') + 1, col)
+                        elif col == 'RequiredSceneTagDuration' and 'image_enabled' in fieldnames:
+                            fieldnames.insert(fieldnames.index('image_enabled') + 1, col)
+                        elif col == 'min_marker_duration' and 'RequiredSceneTagDuration' in fieldnames:
+                            fieldnames.insert(fieldnames.index('RequiredSceneTagDuration') + 1, col)
+                        elif col == 'max_gap' and 'min_marker_duration' in fieldnames:
+                            fieldnames.insert(fieldnames.index('min_marker_duration') + 1, col)
+                        else:
+                            fieldnames.append(col)
+                
+                for row in reader:
+                    # Get tag name (normalized)
+                    tag_name = (row.get('tag_name') or row.get('tag') or '').strip()
+                    if not tag_name or tag_name.lower() in {'', '*', 'default', '__default__'}:
+                        # Keep default row as-is
+                        rows.append(row)
+                        continue
+                    
+                    normalized_tag = tag_name.lower()
+                    if normalized_tag in tag_settings_map:
+                        settings = tag_settings_map[normalized_tag]
+                        
+                        # Update enabled
+                        if 'enabled' in settings:
+                            row['enabled'] = 'TRUE' if settings['enabled'] else 'FALSE'
+                        
+                        # Update markers_enabled
+                        if 'markers_enabled' in settings:
+                            row['markers_enabled'] = 'TRUE' if settings['markers_enabled'] else 'FALSE'
+                        
+                        # Update required_scene_tag_duration
+                        if 'required_scene_tag_duration' in settings and settings['required_scene_tag_duration'] is not None:
+                            row['RequiredSceneTagDuration'] = str(settings['required_scene_tag_duration'])
+                        elif 'required_scene_tag_duration' in settings and settings['required_scene_tag_duration'] == '':
+                            row['RequiredSceneTagDuration'] = ''
+                        
+                        # Update min_marker_duration
+                        if 'min_marker_duration' in settings:
+                            if settings['min_marker_duration'] is not None:
+                                row['min_marker_duration'] = str(settings['min_marker_duration'])
+                            else:
+                                row['min_marker_duration'] = ''
+                        
+                        # Update max_gap
+                        if 'max_gap' in settings:
+                            if settings['max_gap'] is not None:
+                                row['max_gap'] = str(settings['max_gap'])
+                            else:
+                                row['max_gap'] = ''
+                    
+                    rows.append(row)
+        except Exception as exc:
+            _log.exception("Failed to read CSV file for update: %s", exc)
+            raise
+        
+        # Write to temporary file first (atomic write)
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix='tag_settings_',
+            suffix='.csv',
+            dir=self._source_path.parent,
+            text=True
+        )
+        try:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8', newline='') as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+            
+            # Atomic rename
+            os.replace(temp_path, self._source_path)
+            _log.info("Updated tag settings in %s", self._source_path)
+            
+            # Reload configuration
+            global _CONFIG_CACHE
+            with _CONFIG_LOCK:
+                _CONFIG_CACHE = TagConfiguration.load(base_path=self._source_path.parent)
+        except Exception as exc:
+            # Clean up temp file on error
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except:
+                pass
+            _log.exception("Failed to write updated CSV file: %s", exc)
+            raise
+
     @classmethod
     def load(cls, base_path: Path | None = None) -> "TagConfiguration":
         plugin_root = Path(__file__).resolve().parent

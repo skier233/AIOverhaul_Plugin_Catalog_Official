@@ -19,6 +19,11 @@ settings:
     type: path_map
     default: []
     description: Rewrite stash file paths before calling the ai server; each mapping defines a source prefix, replacement, and slash mode
+  - key: edit_tag_list
+    label: Edit tagging configuration
+    type: tag_list_editor
+    default: null
+    description: Edit which tags are enabled or disabled for AI tagging
   - key: apply_ai_tagged_tag
     label: Apply AI_Tagged Tag
     type: boolean
@@ -29,8 +34,3 @@ settings:
     type: string
     default: "_AI"
     description: Suffix appended to backend tag names when creating Stash tags (if not explicitly defined in tag_settings.csv)
-  - key: edit_tag_list
-    label: Edit tag config
-    type: tag_list_editor
-    default: null
-    description: Edit which tags are enabled or disabled for AI tagging

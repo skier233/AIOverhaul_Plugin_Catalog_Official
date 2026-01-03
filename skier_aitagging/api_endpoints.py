@@ -52,6 +52,20 @@ class TagStatusUpdate(BaseModel):
     disabled_tags: Optional[List[str]] = None
 
 
+class TagSettingUpdate(BaseModel):
+    """Single tag setting update."""
+    enabled: Optional[bool] = None
+    markers_enabled: Optional[bool] = None
+    required_scene_tag_duration: Optional[str] = None  # Can be "15", "15s", "35%", etc.
+    min_marker_duration: Optional[float] = None
+    max_gap: Optional[float] = None
+
+
+class TagSettingsUpdate(BaseModel):
+    """Bulk tag settings update."""
+    tag_settings: Dict[str, TagSettingUpdate]  # Map of tag name (normalized) to settings
+
+
 @router.get('/available')
 async def get_plugin_available_tags(db: Session = Depends(get_db)):
     """Get available tags for a plugin that supports tag editing.
@@ -136,6 +150,42 @@ async def update_plugin_tag_statuses(payload: TagStatusUpdate, db: Session = Dep
         return result
     except Exception as exc:
         logger.exception("Failed to update tag statuses for plugin %s", PLUGIN_NAME)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.put('/settings')
+async def update_plugin_tag_settings(payload: TagSettingsUpdate, db: Session = Depends(get_db)):
+    """Update full tag settings for a plugin."""
+    _require_plugin_active(db, PLUGIN_NAME)
+    
+    service = None
+    for svc in services_registry.services.list():
+        if getattr(svc, 'plugin_name', None) == PLUGIN_NAME:
+            service = svc
+            break
+    
+    if not service:
+        raise HTTPException(status_code=404, detail='PLUGIN_SERVICE_NOT_FOUND')
+    
+    if not hasattr(service, 'update_tag_settings'):
+        raise HTTPException(status_code=400, detail='PLUGIN_DOES_NOT_SUPPORT_TAG_EDITING')
+    
+    try:
+        # Convert Pydantic models to dicts
+        settings_dict = {}
+        for tag_name, setting_update in payload.tag_settings.items():
+            settings_dict[tag_name] = {
+                'enabled': setting_update.enabled,
+                'markers_enabled': setting_update.markers_enabled,
+                'required_scene_tag_duration': setting_update.required_scene_tag_duration,
+                'min_marker_duration': setting_update.min_marker_duration,
+                'max_gap': setting_update.max_gap,
+            }
+        
+        result = service.update_tag_settings(settings_dict)
+        return result
+    except Exception as exc:
+        logger.exception("Failed to update tag settings for plugin %s", PLUGIN_NAME)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

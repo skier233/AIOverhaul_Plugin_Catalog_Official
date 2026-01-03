@@ -144,14 +144,14 @@ class SkierAITaggingService(RemoteServiceBase):
     # ------------------------------------------------------------------
 
     async def get_available_tags_data(self, include_disabled: bool = False) -> dict:
-        """Get available tags from CSV file.
+        """Get available tags from CSV file with full settings.
         
         Args:
             include_disabled: If True, include all tags regardless of enabled status.
                            If False (default), only return enabled tags.
         
         Returns:
-            dict with 'tags' and 'models' keys. Tags are a flat list from CSV.
+            dict with 'tags' (full settings), 'models', and 'defaults' keys.
         """
         import csv
         import logging
@@ -164,43 +164,71 @@ class SkierAITaggingService(RemoteServiceBase):
         
         # Read tags directly from CSV file
         tags_list = []
+        defaults = {}
         csv_path = tag_config_obj.source_path
         
         if not csv_path.exists():
             _log.warning("Tag settings CSV file does not exist at %s", csv_path)
-            return {'tags': [], 'models': []}
+            return {'tags': [], 'models': [], 'defaults': {}}
         
         try:
             with csv_path.open("r", encoding="utf-8", newline="") as handle:
                 reader = csv.DictReader(handle)
                 if reader.fieldnames is None:
                     _log.warning("Tag settings CSV file is missing a header row")
-                    return {'tags': [], 'models': []}
+                    return {'tags': [], 'models': [], 'defaults': {}}
                 
                 for row in reader:
                     # Get tag name from CSV
                     tag_name = (row.get('tag_name') or row.get('tag') or '').strip()
                     
-                    # Skip default/empty rows
-                    if not tag_name or tag_name.lower() in {'', '*', 'default', '__default__'}:
+                    # Extract default values from __default__ row
+                    if tag_name.lower() == '__default__':
+                        defaults['required_scene_tag_duration'] = row.get('RequiredSceneTagDuration', '').strip()
+                        defaults['min_marker_duration'] = row.get('min_marker_duration', '').strip()
+                        defaults['max_gap'] = row.get('max_gap', '').strip()
+                        defaults['markers_enabled'] = row.get('markers_enabled', 'TRUE').strip().upper() == 'TRUE'
                         continue
+                    
+                    # Skip empty rows
+                    if not tag_name or tag_name.lower() in {'', '*', 'default', 'unused1', 'unused2', 'unused3', 'unused4'}:
+                        continue
+                    
+                    # Get resolved settings for this tag
+                    settings = tag_config_obj.resolve(tag_name)
                     
                     # Check if tag should be included based on enabled status
                     if not include_disabled:
-                        is_enabled = tag_config_obj.get_tag_enabled_status(tag_name)
-                        if not is_enabled:
+                        if not settings.enabled:
                             continue
                     
-                    # Add tag to list (normalized name is used as key, but we keep original for display)
+                    # Get category from CSV row
+                    category = row.get('category', '').strip() or 'Other'
+                    
+                    # Format required_scene_tag_duration
+                    req_duration_str = None
+                    if settings.required_scene_tag_duration:
+                        if settings.required_scene_tag_duration.unit == 'percent':
+                            req_duration_str = f"{settings.required_scene_tag_duration.value}%"
+                        else:
+                            req_duration_str = str(settings.required_scene_tag_duration.value)
+                    
+                    # Add tag with full settings
                     tags_list.append({
                         'tag': tag_name,
                         'name': tag_name,  # For compatibility
+                        'category': category,
+                        'enabled': settings.enabled,
+                        'markers_enabled': settings.markers_enabled,
+                        'required_scene_tag_duration': req_duration_str,
+                        'min_marker_duration': settings.min_marker_duration,
+                        'max_gap': settings.max_gap,
                     })
         except Exception as exc:
             _log.exception("Failed to read tags from CSV file %s: %s", csv_path, exc)
-            return {'tags': [], 'models': [], 'error': f'Failed to read CSV: {str(exc)}'}
+            return {'tags': [], 'models': [], 'defaults': {}, 'error': f'Failed to read CSV: {str(exc)}'}
         
-        return {'tags': tags_list, 'models': []}
+        return {'tags': tags_list, 'models': [], 'defaults': defaults}
 
     def get_enabled_tags_list(self) -> list[str]:
         """Get list of enabled tag names (normalized, lowercase)."""
@@ -253,6 +281,37 @@ class SkierAITaggingService(RemoteServiceBase):
         
         tag_config_obj.update_tag_enabled_status(updated_map)
         return {'status': 'ok', 'updated': len(updated_map)}
+
+    def update_tag_settings(self, tag_settings: dict) -> dict:
+        """Update full tag settings for multiple tags.
+        
+        Args:
+            tag_settings: Dictionary mapping tag names (normalized, lowercase) to dicts with:
+                - enabled: bool (optional)
+                - markers_enabled: bool (optional)
+                - required_scene_tag_duration: str (optional, e.g., "15", "15s", "35%")
+                - min_marker_duration: float (optional)
+                - max_gap: float (optional)
+        
+        Returns:
+            dict with 'status' and 'updated' count
+        """
+        from . import tag_config
+        tag_config_obj = tag_config.get_tag_configuration()
+        
+        # Convert to format expected by tag_config
+        settings_map = {}
+        for tag_name, settings in tag_settings.items():
+            settings_map[tag_name] = {
+                'enabled': settings.get('enabled'),
+                'markers_enabled': settings.get('markers_enabled'),
+                'required_scene_tag_duration': settings.get('required_scene_tag_duration'),
+                'min_marker_duration': settings.get('min_marker_duration'),
+                'max_gap': settings.get('max_gap'),
+            }
+        
+        tag_config_obj.update_tag_settings(settings_map)
+        return {'status': 'ok', 'updated': len(tag_settings)}
 
 def register():
     services.register(SkierAITaggingService())
