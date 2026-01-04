@@ -85,7 +85,7 @@ async def _apply_scene_markers_and_tags(
     service_name: str,
     scene_duration: float,
     existing_scene_tag_ids: Sequence[int] | None,
-    apply_ai_tagged_tag: bool,
+    apply_ai_tagged_tag: bool = True,
 ):
     """Reload stored markers and tags for a scene and provide basic counts."""
 
@@ -475,6 +475,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                 service_name=service.name,
                 scene_duration=scene_duration,
                 existing_scene_tag_ids=scene_tags,
+                apply_ai_tagged_tag=service.apply_ai_tagged_tag,
             )
             message = (
                 f"Scene #{scene_id}: remote service returned no data. "
