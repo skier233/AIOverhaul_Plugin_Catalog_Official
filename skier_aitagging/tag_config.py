@@ -58,6 +58,7 @@ class SceneTagDurationRequirement:
 class TagSettings:
     tag_name: str
     stash_name: str | None
+    enabled: bool
     markers_enabled: bool
     scene_tag_enabled: bool
     image_enabled: bool
@@ -71,6 +72,7 @@ class TagSettings:
 @dataclass(slots=True)
 class TagSettingsOverride:
     stash_name: str | None = None
+    enabled: bool | None = None
     markers_enabled: bool | None = None
     scene_tag_enabled: bool | None = None
     image_enabled: bool | None = None
@@ -91,6 +93,7 @@ def _base_settings() -> TagSettings:
     return TagSettings(
         tag_name="__global__",
         stash_name=None,
+        enabled=True,
         markers_enabled=True,
         scene_tag_enabled=True,
         image_enabled=False,
@@ -164,6 +167,235 @@ class TagConfiguration:
     def iter_overrides(self) -> Iterable[Tuple[str, TagSettingsOverride]]:
         return self._overrides.items()
 
+    def get_enabled_tags(self) -> list[str]:
+        """Get list of enabled tag names (normalized, lowercase)."""
+        enabled = []
+        for tag_name, override in self._overrides.items():
+            settings = self.resolve(tag_name)
+            # Default to True if enabled is None (backward compatibility)
+            if settings.enabled is not False:
+                enabled.append(tag_name)
+        return enabled
+
+    def get_tag_enabled_status(self, tag_name: str) -> bool:
+        """Get enabled status for a tag (defaults to True if not specified)."""
+        settings = self.resolve(tag_name)
+        # Default to True if enabled is None (backward compatibility)
+        return settings.enabled is not False
+
+    def get_all_tag_statuses(self) -> Dict[str, bool]:
+        """Get dictionary mapping tag names (normalized) to enabled status."""
+        statuses = {}
+        for tag_name, override in self._overrides.items():
+            settings = self.resolve(tag_name)
+            # Default to True if enabled is None (backward compatibility)
+            statuses[tag_name] = settings.enabled is not False
+        return statuses
+
+    def update_tag_enabled_status(self, tag_enabled_map: Dict[str, bool]) -> None:
+        """Update enabled status for tags in the CSV file.
+        
+        Args:
+            tag_enabled_map: Dictionary mapping tag names (lowercase) to enabled status
+        """
+        import tempfile
+        import os
+        
+        if not self._source_path.exists():
+            _log.warning("Cannot update tag enabled status: CSV file does not exist at %s", self._source_path)
+            return
+        
+        # Read existing CSV
+        rows = []
+        fieldnames = None
+        try:
+            with self._source_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                fieldnames = list(reader.fieldnames) if reader.fieldnames else []
+                
+                # Add 'enabled' column if it doesn't exist
+                if 'enabled' not in fieldnames:
+                    # Insert after 'tag_name' if it exists, otherwise at the beginning
+                    if 'tag_name' in fieldnames:
+                        tag_name_idx = fieldnames.index('tag_name')
+                        fieldnames.insert(tag_name_idx + 1, 'enabled')
+                    else:
+                        fieldnames.insert(0, 'enabled')
+                
+                for row in reader:
+                    # Get tag name (normalized)
+                    tag_name = (row.get('tag_name') or row.get('tag') or '').strip()
+                    if not tag_name or tag_name.lower() in {'', '*', 'default', '__default__'}:
+                        # For default row, set enabled to TRUE if not present
+                        if 'enabled' not in row or not row.get('enabled'):
+                            row['enabled'] = 'TRUE'
+                        rows.append(row)
+                        continue
+                    
+                    normalized_tag = tag_name.lower()
+                    if normalized_tag in tag_enabled_map:
+                        # Update enabled status
+                        row['enabled'] = 'TRUE' if tag_enabled_map[normalized_tag] else 'FALSE'
+                    elif 'enabled' not in row or not row.get('enabled'):
+                        # Set default to TRUE if not present
+                        row['enabled'] = 'TRUE'
+                    
+                    rows.append(row)
+        except Exception as exc:
+            _log.exception("Failed to read CSV file for update: %s", exc)
+            raise
+        
+        # Write to temporary file first (atomic write)
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix='tag_settings_',
+            suffix='.csv',
+            dir=self._source_path.parent,
+            text=True
+        )
+        try:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8', newline='') as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+            
+            # Atomic rename
+            os.replace(temp_path, self._source_path)
+            _log.info("Updated tag enabled status in %s", self._source_path)
+            
+            # Reload configuration
+            global _CONFIG_CACHE
+            with _CONFIG_LOCK:
+                _CONFIG_CACHE = TagConfiguration.load(base_path=self._source_path.parent)
+        except Exception as exc:
+            # Clean up temp file on error
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except:
+                pass
+            _log.exception("Failed to write updated CSV file: %s", exc)
+            raise
+
+    def update_tag_settings(self, tag_settings_map: Dict[str, Dict]) -> None:
+        """Update full tag settings for tags in the CSV file.
+        
+        Args:
+            tag_settings_map: Dictionary mapping tag names (lowercase) to settings dict with keys:
+                - enabled: bool
+                - markers_enabled: bool (optional)
+                - required_scene_tag_duration: str (optional, e.g., "15", "15s", "35%")
+                - min_marker_duration: float (optional)
+                - max_gap: float (optional)
+        """
+        import tempfile
+        import os
+        
+        if not self._source_path.exists():
+            _log.warning("Cannot update tag settings: CSV file does not exist at %s", self._source_path)
+            return
+        
+        # Read existing CSV
+        rows = []
+        fieldnames = None
+        try:
+            with self._source_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                fieldnames = list(reader.fieldnames) if reader.fieldnames else []
+                
+                # Ensure all required columns exist
+                required_cols = ['enabled', 'markers_enabled', 'RequiredSceneTagDuration', 'min_marker_duration', 'max_gap']
+                for col in required_cols:
+                    if col not in fieldnames:
+                        # Insert after appropriate column
+                        if col == 'enabled' and 'tag_name' in fieldnames:
+                            fieldnames.insert(fieldnames.index('tag_name') + 1, col)
+                        elif col == 'markers_enabled' and 'enabled' in fieldnames:
+                            fieldnames.insert(fieldnames.index('enabled') + 1, col)
+                        elif col == 'RequiredSceneTagDuration' and 'image_enabled' in fieldnames:
+                            fieldnames.insert(fieldnames.index('image_enabled') + 1, col)
+                        elif col == 'min_marker_duration' and 'RequiredSceneTagDuration' in fieldnames:
+                            fieldnames.insert(fieldnames.index('RequiredSceneTagDuration') + 1, col)
+                        elif col == 'max_gap' and 'min_marker_duration' in fieldnames:
+                            fieldnames.insert(fieldnames.index('min_marker_duration') + 1, col)
+                        else:
+                            fieldnames.append(col)
+                
+                for row in reader:
+                    # Get tag name (normalized)
+                    tag_name = (row.get('tag_name') or row.get('tag') or '').strip()
+                    if not tag_name or tag_name.lower() in {'', '*', 'default', '__default__'}:
+                        # Keep default row as-is
+                        rows.append(row)
+                        continue
+                    
+                    normalized_tag = tag_name.lower()
+                    if normalized_tag in tag_settings_map:
+                        settings = tag_settings_map[normalized_tag]
+                        
+                        # Update enabled
+                        if 'enabled' in settings:
+                            row['enabled'] = 'TRUE' if settings['enabled'] else 'FALSE'
+                        
+                        # Update markers_enabled
+                        if 'markers_enabled' in settings:
+                            row['markers_enabled'] = 'TRUE' if settings['markers_enabled'] else 'FALSE'
+                        
+                        # Update required_scene_tag_duration
+                        if 'required_scene_tag_duration' in settings and settings['required_scene_tag_duration'] is not None:
+                            row['RequiredSceneTagDuration'] = str(settings['required_scene_tag_duration'])
+                        elif 'required_scene_tag_duration' in settings and settings['required_scene_tag_duration'] == '':
+                            row['RequiredSceneTagDuration'] = ''
+                        
+                        # Update min_marker_duration
+                        if 'min_marker_duration' in settings:
+                            if settings['min_marker_duration'] is not None:
+                                row['min_marker_duration'] = str(settings['min_marker_duration'])
+                            else:
+                                row['min_marker_duration'] = ''
+                        
+                        # Update max_gap
+                        if 'max_gap' in settings:
+                            if settings['max_gap'] is not None:
+                                row['max_gap'] = str(settings['max_gap'])
+                            else:
+                                row['max_gap'] = ''
+                    
+                    rows.append(row)
+        except Exception as exc:
+            _log.exception("Failed to read CSV file for update: %s", exc)
+            raise
+        
+        # Write to temporary file first (atomic write)
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix='tag_settings_',
+            suffix='.csv',
+            dir=self._source_path.parent,
+            text=True
+        )
+        try:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8', newline='') as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+            
+            # Atomic rename
+            os.replace(temp_path, self._source_path)
+            _log.info("Updated tag settings in %s", self._source_path)
+            
+            # Reload configuration
+            global _CONFIG_CACHE
+            with _CONFIG_LOCK:
+                _CONFIG_CACHE = TagConfiguration.load(base_path=self._source_path.parent)
+        except Exception as exc:
+            # Clean up temp file on error
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except:
+                pass
+            _log.exception("Failed to write updated CSV file: %s", exc)
+            raise
+
     @classmethod
     def load(cls, base_path: Path | None = None) -> "TagConfiguration":
         plugin_root = Path(__file__).resolve().parent
@@ -230,6 +462,9 @@ def get_tag_configuration(*, reload: bool = False) -> TagConfiguration:
 
 def resolve_backend_to_stash_tag_id(backend_label: str, tag_config, category: str | None) -> int | None:
     settings = tag_config.resolve(backend_label)
+    # Check if tag is enabled (default to True if None for backward compatibility)
+    if settings.enabled is False:
+        return None
     stash_name = settings.stash_name or backend_label
     if not stash_name:
         return None
@@ -252,6 +487,7 @@ def _parse_row(row_number: int, raw_row: dict[str, str]) -> tuple[str | None, Ta
     tag_value = tag_value.strip() if isinstance(tag_value, str) else ""
     override = TagSettingsOverride()
     override.stash_name = _normalize_string(normalized.get("stashname"))
+    override.enabled = _parse_bool(normalized.get("enabled"))
     override.markers_enabled = _parse_bool(normalized.get("markersenabled"))
     override.scene_tag_enabled = _parse_bool(normalized.get("scenetagenabled"))
     override.image_enabled = _parse_bool(normalized.get("imageenabled"))
@@ -272,6 +508,8 @@ def _parse_row(row_number: int, raw_row: dict[str, str]) -> tuple[str | None, Ta
 def _apply_override(base: TagSettings, override: TagSettingsOverride) -> None:
     if override.stash_name is not None:
         base.stash_name = override.stash_name or None
+    if override.enabled is not None:
+        base.enabled = override.enabled
     if override.markers_enabled is not None:
         base.markers_enabled = override.markers_enabled
     if override.scene_tag_enabled is not None:

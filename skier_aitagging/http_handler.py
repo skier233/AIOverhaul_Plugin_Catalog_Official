@@ -64,10 +64,21 @@ async def call_scene_api(
 async def get_active_scene_models(service: RemoteServiceBase) -> list[AIModelInfo]:
     """Fetch the list of active models from the remote service."""
     try:
-        return await service.http.get(
+        # Get JSON response and parse manually since list[AIModelInfo] doesn't work well with TypeAdapter
+        response_data = await service.http.get(
             ACTIVE_SCENE_MODELS,
-            response_model=list[AIModelInfo],
+            expect_json=True,
         )
+        
+        if not response_data:
+            return []
+        
+        # Parse each item in the list to AIModelInfo
+        if isinstance(response_data, list):
+            return [AIModelInfo(**item) if isinstance(item, dict) else item for item in response_data]
+        else:
+            # If it's already parsed, return as-is
+            return response_data if isinstance(response_data, list) else []
         
     except asyncio.CancelledError:  # pragma: no cover
         raise
