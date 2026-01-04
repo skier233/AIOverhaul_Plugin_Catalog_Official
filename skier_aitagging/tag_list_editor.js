@@ -145,7 +145,17 @@
         
         // Extract loaded categories from active models
         const loadedCategoriesList = availableResponse.loaded_categories || [];
-        const loadedCategoriesSet = new Set(loadedCategoriesList.map(function(cat) { return cat.toLowerCase(); }));
+        
+        // Normalize category names by removing/replacing spaces, dashes, underscores, dots, etc.
+        // This allows "Body Parts" to match "bodyparts", "Sexual Actions" to match "actions", etc.
+        function normalizeCategory(cat) {
+          if (!cat) return '';
+          return cat.toLowerCase()
+            .replace(/[\s\-_\.]+/g, '') // Replace spaces, dashes, underscores, dots with nothing
+            .trim();
+        }
+        
+        const loadedCategoriesSet = new Set(loadedCategoriesList.map(normalizeCategory));
         setLoadedCategories(new Set(loadedCategoriesList)); // Store original case for display
         
         // Build tag settings map from tags, filtering by loaded categories
@@ -154,15 +164,15 @@
           const tagName = tagInfo.tag || tagInfo.name || '';
           const normalized = tagName.toLowerCase();
           const category = tagInfo.category || 'Other';
-          const categoryLower = category.toLowerCase();
+          const categoryNormalized = normalizeCategory(category);
           
-          // Filter: only include tags whose category contains a loaded model category (case-insensitive)
+          // Filter: only include tags whose category contains a loaded model category (case-insensitive, normalized)
           // If no models are loaded (empty set), show all tags (graceful degradation)
           if (loadedCategoriesSet.size > 0) {
             let matches = false;
             // Check if any loaded category is contained in the tag category (or vice versa)
             loadedCategoriesSet.forEach(function(loadedCat) {
-              if (categoryLower.includes(loadedCat) || loadedCat.includes(categoryLower)) {
+              if (categoryNormalized.includes(loadedCat) || loadedCat.includes(categoryNormalized)) {
                 matches = true;
               }
             });
