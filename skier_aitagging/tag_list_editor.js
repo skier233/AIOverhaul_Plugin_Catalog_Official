@@ -113,6 +113,11 @@
     const defaults = defaultsState[0];
     const setDefaults = defaultsState[1];
     
+    // Loaded categories from active models
+    const loadedCategoriesState = React.useState(new Set());
+    const loadedCategories = loadedCategoriesState[0];
+    const setLoadedCategories = loadedCategoriesState[1];
+    
     // Expanded/collapsed sections (start collapsed by default)
     const expandedSectionsState = React.useState(new Set());
     const expandedSections = expandedSectionsState[0];
@@ -138,14 +143,37 @@
         const tags = availableResponse.tags || [];
         const defaultsData = availableResponse.defaults || {};
         
-        // Build tag settings map from tags
+        // Extract loaded categories from active models
+        const loadedCategoriesList = availableResponse.loaded_categories || [];
+        const loadedCategoriesSet = new Set(loadedCategoriesList.map(function(cat) { return cat.toLowerCase(); }));
+        setLoadedCategories(new Set(loadedCategoriesList)); // Store original case for display
+        
+        // Build tag settings map from tags, filtering by loaded categories
         const settingsMap = {};
         tags.forEach(function(tagInfo) {
           const tagName = tagInfo.tag || tagInfo.name || '';
           const normalized = tagName.toLowerCase();
+          const category = tagInfo.category || 'Other';
+          const categoryLower = category.toLowerCase();
+          
+          // Filter: only include tags whose category contains a loaded model category (case-insensitive)
+          // If no models are loaded (empty set), show all tags (graceful degradation)
+          if (loadedCategoriesSet.size > 0) {
+            let matches = false;
+            // Check if any loaded category is contained in the tag category (or vice versa)
+            loadedCategoriesSet.forEach(function(loadedCat) {
+              if (categoryLower.includes(loadedCat) || loadedCat.includes(categoryLower)) {
+                matches = true;
+              }
+            });
+            if (!matches) {
+              return; // Skip this tag - its category doesn't match any loaded model category
+            }
+          }
+          
           settingsMap[normalized] = {
             tagName: tagName,
-            category: tagInfo.category || 'Other',
+            category: category,
             enabled: tagInfo.enabled !== false, // Default to true
             markers_enabled: tagInfo.markers_enabled !== false, // Default to true
             required_scene_tag_duration: tagInfo.required_scene_tag_duration || '',
@@ -160,6 +188,7 @@
         if (setError) setError(e.message || 'Failed to load tag data');
         setTagSettings({});
         setDefaults({});
+        setLoadedCategories(new Set()); // Reset on error
       } finally {
         setLoading(false);
       }
@@ -337,6 +366,9 @@
           React.createElement('div', {
             style: { fontSize: 11, color: '#aaa', marginBottom: 16, lineHeight: 1.4, padding: '0 4px' }
           }, 'Configure tag settings. Unchecked tags will be excluded from tag generation. Changes are saved to tag_settings.csv.'),
+          loadedCategories.size > 0 && React.createElement('div', {
+            style: { fontSize: 11, color: '#888', marginBottom: 12, padding: '8px 12px', background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 4 }
+          }, 'Showing tags for loaded model categories: ' + Array.from(loadedCategories).sort().join(', ') + '. Tags from other categories are hidden because their models are not loaded.'),
           loading ? React.createElement('div', {
             style: { padding: 40, textAlign: 'center', fontSize: 12, opacity: 0.7 }
           }, 'Loading tags from CSV...') :

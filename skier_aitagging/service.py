@@ -156,6 +156,7 @@ class SkierAITaggingService(RemoteServiceBase):
         import csv
         import logging
         from . import tag_config
+        from .http_handler import get_active_scene_models
         
         _log = logging.getLogger(__name__)
         
@@ -228,7 +229,35 @@ class SkierAITaggingService(RemoteServiceBase):
             _log.exception("Failed to read tags from CSV file %s: %s", csv_path, exc)
             return {'tags': [], 'models': [], 'defaults': {}, 'error': f'Failed to read CSV: {str(exc)}'}
         
-        return {'tags': tags_list, 'models': [], 'defaults': defaults}
+        # Fetch active models from nsfw backend
+        active_models = []
+        loaded_categories = set()
+        try:
+            active_models_list = await get_active_scene_models(self)
+            if active_models_list:
+                for model in active_models_list:
+                    # Convert AIModelInfo to dict for JSON serialization
+                    model_dict = {
+                        'name': model.name,
+                        'identifier': model.identifier,
+                        'version': model.version,
+                        'categories': model.categories,
+                        'type': model.type,
+                    }
+                    active_models.append(model_dict)
+                    # Extract all categories from this model
+                    if model.categories:
+                        loaded_categories.update(model.categories)
+        except Exception as exc:
+            # If backend is unavailable, log warning but continue (graceful degradation)
+            _log.warning("Failed to fetch active models from nsfw backend: %s. Showing all tags.", exc)
+        
+        return {
+            'tags': tags_list,
+            'models': active_models,
+            'loaded_categories': list(loaded_categories),
+            'defaults': defaults
+        }
 
     def get_enabled_tags_list(self) -> list[str]:
         """Get list of enabled tag names (normalized, lowercase)."""
