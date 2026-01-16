@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import sqlalchemy as sa
-from stash_ai_server.db.session import SessionLocal
+from stash_ai_server.db.session import get_session
 from stash_ai_server.models.ai_results import AIModelRun, AIResultAggregate
 from stash_ai_server.models.interaction import SceneWatch, SceneWatchSegment
 from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
@@ -93,7 +93,7 @@ def _load_watch_history(
         stmt = stmt.limit(history_limit)
 
     history: List[Dict[str, Any]] = []
-    with SessionLocal() as session:
+    with get_session() as session:
         for row in session.execute(stmt):
             watched_s = float(row.watched_s or 0.0)
             if watched_s <= 0:
@@ -288,7 +288,7 @@ def _fetch_corpus_stats(
         )
     )
     stats: Dict[int, Dict[str, float]] = {}
-    with SessionLocal() as session:
+    with get_session() as session:
         total_scenes = int(session.execute(total_stmt).scalar_one() or 0)
         for row in session.execute(stats_stmt):
             tag_id = int(row.tag_id)
@@ -331,7 +331,7 @@ def _rank_candidates(
     candidate_scores: Dict[int, float] = defaultdict(float)
     tag_contribs: Dict[int, List[Tuple[int, float]]] = defaultdict(list)
     ordered_tags = sorted(tag_weights.items(), key=lambda item: item[1], reverse=True)
-    with SessionLocal() as session:
+    with get_session() as session:
         for tag_id, weight in ordered_tags:
             if weight <= 0:
                 continue

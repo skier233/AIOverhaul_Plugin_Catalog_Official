@@ -63,10 +63,10 @@
     {
       "name": "personalized_tfidf",
       "humanName": "Personalized TF-IDF Recommender",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "TF-IDF based personalized recommender system",
       "dependsOn": ["skier_aitagging"],
-      "requiredBackend": ">=0.0.0",
+      "requiredBackend": ">=0.9.2",
       "path": "personalized_tfidf",
       "manifest": "personalized_tfidf/plugin.yml"
     },
