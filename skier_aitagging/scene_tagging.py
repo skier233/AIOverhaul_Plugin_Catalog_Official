@@ -24,7 +24,7 @@ async def apply_scene_tags(
 ) -> dict[str, list[int]]:
     """Apply scene-level AI tags based on stored aggregates.
 
-    Returns a dict with ``applied`` and ``removed`` keys listing tag ids.
+    Returns a dict with applied and removed keys listing tag ids.
     """
 
     config = get_tag_configuration()
@@ -35,7 +35,7 @@ async def apply_scene_tags(
             scene_id=scene_id,
         )
     except Exception:
-        _log.exception("Failed to load scene tag aggregates for scene_id=%s", scene_id)
+        _log.exception("Failed to load scene tag aggregates for scene_id=%%s", scene_id)
         totals = {}
 
     aggregate_totals = {int(tag_id): float(duration or 0.0) for tag_id, duration in (totals or {}).items()}
@@ -61,7 +61,7 @@ async def apply_scene_tags(
         threshold = settings.required_scene_tag_duration.as_seconds(scene_duration)
         if threshold is None:
             _log.warning(
-                "Skipping percentage-based scene tag '%s' for scene_id=%s due to missing duration",
+                "Skipping percentage-based scene tag '%%s' for scene_id=%%s due to missing duration",
                 tag_name,
                 scene_id,
             )
@@ -84,9 +84,8 @@ async def apply_scene_tags(
         if tag_id not in tags_to_add and tag_id in AI_tags_cache.values():
             tags_to_remove.add(tag_id)
 
-    ai_tagged_id = AI_Tagged_Tag_Id
-    if apply_ai_tagged_tag and ai_tagged_id:
-        tags_to_add.add(ai_tagged_id)
+    if apply_ai_tagged_tag and AI_Tagged_Tag_Id:
+        tags_to_add.add(AI_Tagged_Tag_Id)
     # Avoid removing tags we plan to add again.
     tags_to_remove.difference_update(tags_to_add)
 
@@ -97,11 +96,11 @@ async def apply_scene_tags(
         try:
             await stash_api.remove_tags_from_scene_async(scene_id, removed_ids)
         except Exception:
-            _log.exception("Failed to remove scene tags %s from scene_id=%s", removed_ids, scene_id)
+            _log.exception("Failed to remove scene tags %%s from scene_id=%%s", removed_ids, scene_id)
     if applied_ids:
         try:
             await stash_api.add_tags_to_scene_async(scene_id, applied_ids)
         except Exception:
-            _log.exception("Failed to apply scene tags %s to scene_id=%s", applied_ids, scene_id)
+            _log.exception("Failed to apply scene tags %%s to scene_id=%%s", applied_ids, scene_id)
 
     return {"applied": applied_ids, "removed": removed_ids}

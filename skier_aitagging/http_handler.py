@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Sequence
+from pydantic import TypeAdapter
 from .models import AIModelInfo, AIVideoResultV3, ImageResult, VideoServerResponse
 from stash_ai_server.services.base import RemoteServiceBase
 
@@ -27,7 +28,7 @@ async def call_images_api(service: RemoteServiceBase, image_paths: list[str]) ->
     except asyncio.CancelledError:  # pragma: no cover
         raise
     except Exception as exc:  # noqa: BLE001
-        _log.warning("images API call failed: %s", exc)
+        _log.warning("images API call failed: %%s", exc)
         raise
 
 async def call_scene_api(
@@ -39,7 +40,7 @@ async def call_scene_api(
     threshold: float,
     skip_categories: Sequence[str] | None = None,
 ) -> VideoServerResponse | None:
-    """Call the /scene endpoint for a single scene."""   
+    """Call the /scene endpoint for a single scene."""
     try:
         payload = {
             "path": scene_path,
@@ -58,30 +59,18 @@ async def call_scene_api(
     except asyncio.CancelledError:  # pragma: no cover
         raise
     except Exception as exc:  # noqa: BLE001
-        _log.warning("scene API call failed for scene_path=%s: %s", scene_path, exc)
+        _log.warning("scene API call failed for scene_path=%%s: %%s", scene_path, exc)
         return None
-    
+
 async def get_active_scene_models(service: RemoteServiceBase) -> list[AIModelInfo]:
     """Fetch the list of active models from the remote service."""
     try:
-        # Get JSON response and parse manually since list[AIModelInfo] doesn't work well with TypeAdapter
-        response_data = await service.http.get(
+        return await service.http.get(
             ACTIVE_SCENE_MODELS,
-            expect_json=True,
+            response_model=TypeAdapter(list[AIModelInfo]),
         )
-        
-        if not response_data:
-            return []
-        
-        # Parse each item in the list to AIModelInfo
-        if isinstance(response_data, list):
-            return [AIModelInfo(**item) if isinstance(item, dict) else item for item in response_data]
-        else:
-            # If it's already parsed, return as-is
-            return response_data if isinstance(response_data, list) else []
-        
     except asyncio.CancelledError:  # pragma: no cover
         raise
     except Exception as exc:  # noqa: BLE001
-        _log.warning("Failed to fetch active models: %s", exc)
+        _log.warning("Failed to fetch active models: %%s", exc)
         return []

@@ -37,25 +37,31 @@ def get_selected_items(ctx: ContextInput) -> list[str]:
         return []
 
 def resolve_image_tag_id_from_label(label: str, config) -> int | None:
-    """Resolve a configured image tag label to a concrete Stash tag id."""
+    """Resolve a configured image tag label to a concrete Stash tag id.
+    
+    Note: This function does NOT filter by enabled status - it always resolves
+    the tag ID so that tags can be stored in the DB regardless of enabled status.
+    Filtering by enabled status should happen later when applying tags to Stash.
+    """
 
     normalized = (label or "").strip()
     if not normalized:
-        _log.warning("Failed to resolve image tag label '%s': empty or invalid", label)
+        _log.warning("Failed to resolve image tag label '%%s': empty or invalid", label)
         return None
     settings = config.resolve(normalized)
-    # Check if tag is enabled (default to True if None for backward compatibility)
-    if settings.enabled is False:
-        return None
     stash_name = settings.stash_name or normalized
     if not stash_name:
-        _log.warning("Failed to resolve image tag label '%s': no stash name found", label)
+        _log.warning("Failed to resolve image tag label '%%s': no stash name found", label)
         return None
     return resolve_ai_tag_reference(stash_name)
 
 
 def filter_enabled_tag_ids(tag_ids: Sequence[int], config) -> list[int]:
-    """Normalize cached tag ids to match current configuration constraints."""
+    """Normalize cached tag ids to match current configuration constraints.
+    
+    This function filters tags by enabled status - only enabled tags are returned.
+    Use this when applying tags to Stash UI, not when storing to DB.
+    """
 
     filtered: list[int] = []
     applied: set[int] = set()
@@ -78,7 +84,11 @@ def filter_enabled_tag_ids(tag_ids: Sequence[int], config) -> list[int]:
 
 
 def collect_image_tag_records(tags_by_category: Mapping[str | None, Sequence[str]], config) -> dict[str | None, list[int]]:
-    """Build unique per-category image tag records while preserving raw labels."""
+    """Build unique per-category image tag records while preserving raw labels.
+    
+    Note: This stores ALL detected tags to the DB regardless of enabled status.
+    Filtering by enabled status happens later when applying tags to Stash.
+    """
 
     records: dict[str | None, list[int]] = {}
     for category_key, labels in tags_by_category.items():
@@ -91,14 +101,6 @@ def collect_image_tag_records(tags_by_category: Mapping[str | None, Sequence[str
             candidate_id = resolve_image_tag_id_from_label(normalized_label, config)
             if candidate_id is not None:
                 bucket.append(candidate_id)
-            else:
-                lowered = normalized_label.lower()
-                if any(
-                    existing.tag_id is None and (existing.label or "").lower() == lowered
-                    for existing in bucket
-                ):
-                    continue
-            bucket.append(candidate_id)
 
     # Drop empty buckets to keep downstream storage tidy
     return {category: entries for category, entries in records.items() if entries}

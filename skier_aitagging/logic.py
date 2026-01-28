@@ -286,9 +286,8 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
             continue
 
         normalized_ids = filter_enabled_tag_ids(stored_tag_ids, config)
-        ai_tagged_id = AI_Tagged_Tag_Id
-        if apply_ai_tagged_tag and ai_tagged_id:
-            normalized_ids = list(dict.fromkeys([*normalized_ids, ai_tagged_id]))
+        if apply_ai_tagged_tag and AI_Tagged_Tag_Id:
+            normalized_ids = list(dict.fromkeys([*normalized_ids, AI_Tagged_Tag_Id]))
         tags_added_counts[image_id] = len(normalized_ids)
 
         if not normalized_ids and not stored_tag_ids:
