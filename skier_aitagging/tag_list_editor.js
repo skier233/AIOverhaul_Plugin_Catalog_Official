@@ -233,7 +233,18 @@
     }
 
     function isCategoryLoaded(category) {
-      return loadedCategories.has(normalizeCategory(category));
+      var normalizedCat = normalizeCategory(category);
+      if (loadedCategories.has(normalizedCat)) return true;
+      // Fuzzy match: check if the normalized CSV category contains any loaded model category
+      // e.g. CSV "Sexual Actions" → "sexualactions" contains model "actions"
+      // e.g. CSV "Body Parts" → "bodyparts" matches model "bodyparts"
+      var found = false;
+      loadedCategories.forEach(function(loaded) {
+        if (normalizedCat.indexOf(loaded) >= 0 || loaded.indexOf(normalizedCat) >= 0) {
+          found = true;
+        }
+      });
+      return found;
     }
 
     // Helper functions
