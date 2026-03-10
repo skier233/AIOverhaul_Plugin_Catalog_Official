@@ -130,7 +130,10 @@ async def apply_scene_markers(
             # Since we already resolved backend->stash during storage, we need to find
             # which backend tag maps to this stash tag
             settings = config.resolve(tag_name)
-            
+
+            if settings.enabled is False:
+                continue
+
             if not settings.markers_enabled:
                 continue
 

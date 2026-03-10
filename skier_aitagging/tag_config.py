@@ -654,10 +654,13 @@ def get_tag_configuration(*, reload: bool = False) -> TagConfiguration:
 def resolve_backend_to_stash_tag_id(
     backend_label: str, tag_config, category: str | None
 ) -> int | None:
+    """Resolve a backend tag label to a Stash tag ID.
+
+    Always resolves the ID regardless of enabled status so that raw results and
+    aggregates are persisted in the DB (used by the recommender).  The enabled
+    flag is checked later when tags/markers are actually applied to Stash.
+    """
     settings = tag_config.resolve(backend_label)
-    # Check if tag is enabled (default to True if None for backward compatibility)
-    if settings.enabled is False:
-        return None
     stash_name = settings.stash_name or backend_label
     if not stash_name:
         return None
