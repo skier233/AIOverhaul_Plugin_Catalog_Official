@@ -219,8 +219,9 @@ class SkierAITaggingService(RemoteServiceBase):
                         'tag': tag_name,
                         'name': tag_name,  # For compatibility
                         'category': category,
-                        'enabled': settings.enabled,
+                        'scene_tag_enabled': settings.scene_tag_enabled,
                         'markers_enabled': settings.markers_enabled,
+                        'image_enabled': settings.image_enabled,
                         'required_scene_tag_duration': req_duration_str,
                         'min_marker_duration': settings.min_marker_duration,
                         'max_gap': settings.max_gap,
@@ -316,8 +317,9 @@ class SkierAITaggingService(RemoteServiceBase):
         
         Args:
             tag_settings: Dictionary mapping tag names (normalized, lowercase) to dicts with:
-                - enabled: bool (optional)
+                - scene_tag_enabled: bool (optional)
                 - markers_enabled: bool (optional)
+                - image_enabled: bool (optional)
                 - required_scene_tag_duration: str (optional, e.g., "15", "15s", "35%")
                 - min_marker_duration: float (optional)
                 - max_gap: float (optional)
@@ -332,8 +334,9 @@ class SkierAITaggingService(RemoteServiceBase):
         settings_map = {}
         for tag_name, settings in tag_settings.items():
             settings_map[tag_name] = {
-                'enabled': settings.get('enabled'),
+                'scene_tag_enabled': settings.get('scene_tag_enabled'),
                 'markers_enabled': settings.get('markers_enabled'),
+                'image_enabled': settings.get('image_enabled'),
                 'required_scene_tag_duration': settings.get('required_scene_tag_duration'),
                 'min_marker_duration': settings.get('min_marker_duration'),
                 'max_gap': settings.get('max_gap'),

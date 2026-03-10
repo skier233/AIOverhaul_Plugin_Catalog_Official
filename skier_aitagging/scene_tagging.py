@@ -60,10 +60,6 @@ async def apply_scene_tags(
 
         settings = config.resolve(tag_name)
 
-        if settings.enabled is False:
-            tags_to_remove.add(tag_id)
-            return
-
         threshold = settings.required_scene_tag_duration.as_seconds(scene_duration)
         if threshold is None:
             _log.warning(

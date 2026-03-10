@@ -487,15 +487,19 @@ class TagConfiguration:
                     if normalized_tag in tag_settings_map:
                         settings = tag_settings_map[normalized_tag]
 
-                        # Update enabled
-                        if "enabled" in settings:
-                            row["enabled"] = "TRUE" if settings["enabled"] else "FALSE"
+                        # Update scene_tag_enabled
+                        if "scene_tag_enabled" in settings and settings["scene_tag_enabled"] is not None:
+                            row["scene_tag_enabled"] = "TRUE" if settings["scene_tag_enabled"] else "FALSE"
 
                         # Update markers_enabled
-                        if "markers_enabled" in settings:
+                        if "markers_enabled" in settings and settings["markers_enabled"] is not None:
                             row["markers_enabled"] = (
                                 "TRUE" if settings["markers_enabled"] else "FALSE"
                             )
+
+                        # Update image_enabled
+                        if "image_enabled" in settings and settings["image_enabled"] is not None:
+                            row["image_enabled"] = "TRUE" if settings["image_enabled"] else "FALSE"
 
                         # Update required_scene_tag_duration
                         if (

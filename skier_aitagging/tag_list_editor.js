@@ -184,8 +184,9 @@
           settingsMap[normalized] = {
             tagName: tagName,
             category: category,
-            enabled: tagInfo.enabled !== false, // Default to true
+            scene_tag_enabled: tagInfo.scene_tag_enabled !== false, // Default to true
             markers_enabled: tagInfo.markers_enabled !== false, // Default to true
+            image_enabled: tagInfo.image_enabled !== false, // Default to true
             required_scene_tag_duration: tagInfo.required_scene_tag_duration || '',
             min_marker_duration: tagInfo.min_marker_duration || '',
             max_gap: tagInfo.max_gap || '',
@@ -214,8 +215,9 @@
         Object.keys(tagSettings).forEach(function(normalized) {
           const settings = tagSettings[normalized];
           settingsToSave[normalized] = {
-            enabled: settings.enabled,
+            scene_tag_enabled: settings.scene_tag_enabled,
             markers_enabled: settings.markers_enabled,
+            image_enabled: settings.image_enabled,
             required_scene_tag_duration: settings.required_scene_tag_duration || null,
             min_marker_duration: settings.min_marker_duration ? parseFloat(settings.min_marker_duration) : null,
             max_gap: settings.max_gap ? parseFloat(settings.max_gap) : null,
@@ -276,7 +278,7 @@
         const updated = { ...prev };
         Object.keys(updated).forEach(function(normalized) {
           if (updated[normalized].category === category) {
-            updated[normalized] = { ...updated[normalized], enabled: enabled };
+            updated[normalized] = { ...updated[normalized], scene_tag_enabled: enabled, markers_enabled: enabled, image_enabled: enabled };
           }
         });
         return updated;
@@ -286,11 +288,11 @@
     function isCategoryAllEnabled(category) {
       const categoryTags = Object.values(tagSettings).filter(function(s) { return s.category === category; });
       if (categoryTags.length === 0) return false;
-      return categoryTags.every(function(s) { return s.enabled; });
+      return categoryTags.every(function(s) { return s.scene_tag_enabled && s.markers_enabled; });
     }
 
     function getCategoryEnabledCount(category) {
-      return Object.values(tagSettings).filter(function(s) { return s.category === category && s.enabled; }).length;
+      return Object.values(tagSettings).filter(function(s) { return s.category === category && (s.scene_tag_enabled || s.markers_enabled); }).length;
     }
 
     function getCategoryTotalCount(category) {
@@ -375,7 +377,7 @@
           ),
           React.createElement('div', {
             style: { fontSize: 11, color: '#aaa', marginBottom: 16, lineHeight: 1.4, padding: '0 4px' }
-          }, 'Configure tag settings. Unchecked tags will be excluded from tag generation. Changes are saved to tag_settings.csv.'),
+          }, 'Configure tag settings per tag: Scene Tags, Markers, and Images can be independently toggled. Changes are saved to tag_settings.csv.'),
           loadedCategories.size > 0 && React.createElement('div', {
             style: { fontSize: 11, color: '#888', marginBottom: 12, padding: '8px 12px', background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 4 }
           }, 'Showing tags for loaded model categories: ' + Array.from(loadedCategories).sort().join(', ') + '. Tags from other categories are hidden because their models are not loaded.'),
@@ -442,40 +444,30 @@
                       const normalized = tagData.normalized;
                       const settings = tagData.settings;
                       const tagName = settings.tagName;
-                      const isEnabled = settings.enabled;
-                      const isDisabled = !isEnabled;
-                      
+                      const allOff = !settings.scene_tag_enabled && !settings.markers_enabled && !settings.image_enabled;
+
                       // Get default value for required_scene_tag_duration
                       const defaultReqDuration = defaults.required_scene_tag_duration || '15';
                       const showDefaultReqDuration = !settings.required_scene_tag_duration;
-                      
+
                       return React.createElement('div', {
                         key: normalized,
                         style: {
                           padding: '6px 12px',
                           borderBottom: '1px solid #1a1a1a',
-                          background: isDisabled ? '#0f0f0f' : 'transparent',
+                          background: allOff ? '#0f0f0f' : 'transparent',
                           display: 'flex',
                           alignItems: 'center',
                           gap: '12px',
                           flexWrap: 'wrap'
                         }
                       },
-                        // Enabled checkbox
-                        React.createElement('input', {
-                          type: 'checkbox',
-                          checked: isEnabled,
-                          onChange: function(e) {
-                            updateTagSetting(normalized, 'enabled', e.target.checked);
-                          },
-                          style: { cursor: 'pointer', flexShrink: 0 }
-                        }),
                         // Tag name (bold)
                         React.createElement('span', {
                           style: {
                             fontSize: 12,
                             fontWeight: 'bold',
-                            color: isDisabled ? '#666' : '#ddd',
+                            color: allOff ? '#666' : '#ddd',
                             minWidth: '120px',
                             flexShrink: 0
                           }
@@ -487,24 +479,50 @@
                             alignItems: 'center',
                             gap: '12px',
                             flex: 1,
-                            opacity: isDisabled ? 0.5 : 1,
                             flexWrap: 'wrap'
                           }
                         },
-                          // Markers enabled
+                          // Scene Tags checkbox
+                          React.createElement('label', {
+                            style: { display: 'flex', alignItems: 'center', fontSize: 11 }
+                          },
+                            React.createElement('input', {
+                              type: 'checkbox',
+                              checked: settings.scene_tag_enabled,
+                              onChange: function(e) {
+                                updateTagSetting(normalized, 'scene_tag_enabled', e.target.checked);
+                              },
+                              style: { marginRight: 4, cursor: 'pointer' }
+                            }),
+                            React.createElement('span', { style: { color: '#aaa' } }, 'Scene')
+                          ),
+                          // Markers checkbox
                           React.createElement('label', {
                             style: { display: 'flex', alignItems: 'center', fontSize: 11 }
                           },
                             React.createElement('input', {
                               type: 'checkbox',
                               checked: settings.markers_enabled,
-                              disabled: isDisabled,
                               onChange: function(e) {
                                 updateTagSetting(normalized, 'markers_enabled', e.target.checked);
                               },
-                              style: { marginRight: 6, cursor: isDisabled ? 'not-allowed' : 'pointer' }
+                              style: { marginRight: 4, cursor: 'pointer' }
                             }),
                             React.createElement('span', { style: { color: '#aaa' } }, 'Markers')
+                          ),
+                          // Images checkbox
+                          React.createElement('label', {
+                            style: { display: 'flex', alignItems: 'center', fontSize: 11 }
+                          },
+                            React.createElement('input', {
+                              type: 'checkbox',
+                              checked: settings.image_enabled,
+                              onChange: function(e) {
+                                updateTagSetting(normalized, 'image_enabled', e.target.checked);
+                              },
+                              style: { marginRight: 4, cursor: 'pointer' }
+                            }),
+                            React.createElement('span', { style: { color: '#aaa' } }, 'Images')
                           ),
                           // Required scene tag duration
                           React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
@@ -514,7 +532,6 @@
                             React.createElement('input', {
                               type: 'text',
                               value: settings.required_scene_tag_duration || '',
-                              disabled: isDisabled,
                               placeholder: showDefaultReqDuration ? defaultReqDuration : '',
                               onChange: function(e) {
                                 updateTagSetting(normalized, 'required_scene_tag_duration', e.target.value);
@@ -523,11 +540,11 @@
                                 width: '60px',
                                 padding: '2px 4px',
                                 fontSize: 11,
-                                background: isDisabled ? '#1a1a1a' : '#222',
+                                background: '#222',
                                 border: '1px solid #333',
                                 color: showDefaultReqDuration && !settings.required_scene_tag_duration ? '#666' : '#ddd',
                                 fontStyle: showDefaultReqDuration && !settings.required_scene_tag_duration ? 'italic' : 'normal',
-                                cursor: isDisabled ? 'not-allowed' : 'text'
+                                cursor: 'text'
                               }
                             })
                           ),
@@ -539,7 +556,6 @@
                             React.createElement('input', {
                               type: 'number',
                               value: settings.min_marker_duration || '',
-                              disabled: isDisabled,
                               placeholder: defaults.min_marker_duration || '',
                               onChange: function(e) {
                                 updateTagSetting(normalized, 'min_marker_duration', e.target.value);
@@ -548,10 +564,10 @@
                                 width: '50px',
                                 padding: '2px 4px',
                                 fontSize: 11,
-                                background: isDisabled ? '#1a1a1a' : '#222',
+                                background: '#222',
                                 border: '1px solid #333',
                                 color: '#ddd',
-                                cursor: isDisabled ? 'not-allowed' : 'text'
+                                cursor: 'text'
                               }
                             })
                           ),
@@ -563,7 +579,6 @@
                             React.createElement('input', {
                               type: 'number',
                               value: settings.max_gap || '',
-                              disabled: isDisabled,
                               placeholder: defaults.max_gap || '',
                               onChange: function(e) {
                                 updateTagSetting(normalized, 'max_gap', e.target.value);
@@ -572,10 +587,10 @@
                                 width: '50px',
                                 padding: '2px 4px',
                                 fontSize: 11,
-                                background: isDisabled ? '#1a1a1a' : '#222',
+                                background: '#222',
                                 border: '1px solid #333',
                                 color: '#ddd',
-                                cursor: isDisabled ? 'not-allowed' : 'text'
+                                cursor: 'text'
                               }
                             })
                           )

@@ -28,8 +28,9 @@ class TagStatusUpdate(BaseModel):
 
 class TagSettingUpdate(BaseModel):
     """Single tag setting update."""
-    enabled: Optional[bool] = None
+    scene_tag_enabled: Optional[bool] = None
     markers_enabled: Optional[bool] = None
+    image_enabled: Optional[bool] = None
     required_scene_tag_duration: Optional[str] = None  # Can be "15", "15s", "35%%", etc.
     min_marker_duration: Optional[float] = None
     max_gap: Optional[float] = None
@@ -149,8 +150,9 @@ async def update_plugin_tag_settings(payload: TagSettingsUpdate, db: Session = D
         settings_dict = {}
         for tag_name, setting_update in payload.tag_settings.items():
             settings_dict[tag_name] = {
-                "enabled": setting_update.enabled,
+                "scene_tag_enabled": setting_update.scene_tag_enabled,
                 "markers_enabled": setting_update.markers_enabled,
+                "image_enabled": setting_update.image_enabled,
                 "required_scene_tag_duration": setting_update.required_scene_tag_duration,
                 "min_marker_duration": setting_update.min_marker_duration,
                 "max_gap": setting_update.max_gap,
