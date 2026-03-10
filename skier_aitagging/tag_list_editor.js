@@ -154,11 +154,14 @@
         tags.forEach(function(tagInfo) {
           const tagName = tagInfo.tag || tagInfo.name || '';
           const normalized = tagName.toLowerCase();
-          const category = tagInfo.category || 'Other';
+          // Support both list (categories) and legacy single string (category)
+          var cats = tagInfo.categories || (tagInfo.category ? [tagInfo.category] : ['Other']);
+          if (!Array.isArray(cats)) cats = [cats];
+          if (cats.length === 0) cats = ['Other'];
 
           settingsMap[normalized] = {
             tagName: tagName,
-            category: category,
+            categories: cats,
             scene_tag_enabled: tagInfo.scene_tag_enabled !== false, // Default to true
             markers_enabled: tagInfo.markers_enabled !== false, // Default to true
             image_enabled: tagInfo.image_enabled !== false, // Default to true
@@ -271,11 +274,15 @@
       });
     }
 
+    function tagInCategory(s, category) {
+      return s.categories && s.categories.indexOf(category) >= 0;
+    }
+
     function toggleCategoryAll(category, enabled) {
       setTagSettings(function(prev) {
         const updated = { ...prev };
         Object.keys(updated).forEach(function(normalized) {
-          if (updated[normalized].category === category) {
+          if (tagInCategory(updated[normalized], category)) {
             updated[normalized] = { ...updated[normalized], scene_tag_enabled: enabled, markers_enabled: enabled, image_enabled: enabled };
           }
         });
@@ -284,28 +291,30 @@
     }
 
     function isCategoryAllEnabled(category) {
-      const categoryTags = Object.values(tagSettings).filter(function(s) { return s.category === category; });
+      const categoryTags = Object.values(tagSettings).filter(function(s) { return tagInCategory(s, category); });
       if (categoryTags.length === 0) return false;
       return categoryTags.every(function(s) { return s.scene_tag_enabled && s.markers_enabled; });
     }
 
     function getCategoryEnabledCount(category) {
-      return Object.values(tagSettings).filter(function(s) { return s.category === category && (s.scene_tag_enabled || s.markers_enabled); }).length;
+      return Object.values(tagSettings).filter(function(s) { return tagInCategory(s, category) && (s.scene_tag_enabled || s.markers_enabled); }).length;
     }
 
     function getCategoryTotalCount(category) {
-      return Object.values(tagSettings).filter(function(s) { return s.category === category; }).length;
+      return Object.values(tagSettings).filter(function(s) { return tagInCategory(s, category); }).length;
     }
-    
-    // Group tags by category
+
+    // Group tags by category (a tag can appear in multiple categories)
     const tagsByCategory = {};
     Object.keys(tagSettings).forEach(function(normalized) {
       const settings = tagSettings[normalized];
-      const category = settings.category || 'Other';
-      if (!tagsByCategory[category]) {
-        tagsByCategory[category] = [];
-      }
-      tagsByCategory[category].push({ normalized: normalized, settings: settings });
+      var cats = settings.categories || ['Other'];
+      cats.forEach(function(category) {
+        if (!tagsByCategory[category]) {
+          tagsByCategory[category] = [];
+        }
+        tagsByCategory[category].push({ normalized: normalized, settings: settings });
+      });
     });
 
     // Sort tags within each category

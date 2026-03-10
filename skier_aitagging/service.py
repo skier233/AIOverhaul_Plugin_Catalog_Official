@@ -194,8 +194,12 @@ class SkierAITaggingService(RemoteServiceBase):
                     # Get resolved settings for this tag
                     settings = tag_config_obj.resolve(tag_name)
                     
-                    # Get category from CSV row
-                    category = row.get('category', '').strip() or 'Other'
+                    # Get categories from CSV row (pipe-delimited list)
+                    raw_category = row.get('category', '').strip()
+                    if raw_category:
+                        categories = [c.strip() for c in raw_category.split('|') if c.strip()]
+                    else:
+                        categories = ['Other']
                     
                     # Format required_scene_tag_duration
                     req_duration_str = None
@@ -209,7 +213,7 @@ class SkierAITaggingService(RemoteServiceBase):
                     tags_list.append({
                         'tag': tag_name,
                         'name': tag_name,  # For compatibility
-                        'category': category,
+                        'categories': categories,
                         'scene_tag_enabled': settings.scene_tag_enabled,
                         'markers_enabled': settings.markers_enabled,
                         'image_enabled': settings.image_enabled,
