@@ -4,7 +4,7 @@ API endpoints for Skier AI Tagging plugin tag list editor.
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import Optional, Dict
 from sqlalchemy.orm import Session
 from stash_ai_server.db.session import get_db
 from stash_ai_server.api.plugins import _require_plugin_active
@@ -18,12 +18,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/settings/skier_aitagging/tags", tags=["skier_aitagging"])
 
 PLUGIN_NAME = "skier_aitagging"
-
-
-class TagStatusUpdate(BaseModel):
-    tag_statuses: Optional[Dict[str, bool]] = None
-    enabled_tags: Optional[List[str]] = None
-    disabled_tags: Optional[List[str]] = None
 
 
 class TagSettingUpdate(BaseModel):
@@ -64,67 +58,10 @@ async def get_plugin_available_tags(db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="PLUGIN_DOES_NOT_SUPPORT_TAG_EDITING")
 
     try:
-        # Get ALL tags (including disabled ones) for the editor
-        # Service method handles CSV vs legacy mode internally
-        result = await service.get_available_tags_data(include_disabled=True)
+        result = await service.get_available_tags_data()
         return result
     except Exception as exc:
         logger.exception("Failed to get available tags for plugin %%s", PLUGIN_NAME)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.get("/statuses")
-async def get_plugin_tag_statuses(db: Session = Depends(get_db)):
-    """Get all tag enabled statuses for a plugin."""
-    _require_plugin_active(db, PLUGIN_NAME)
-
-    service = None
-    for svc in services_registry.services.list():
-        if getattr(svc, "plugin_name", None) == PLUGIN_NAME:
-            service = svc
-            break
-
-    if not service:
-        raise HTTPException(status_code=404, detail="PLUGIN_SERVICE_NOT_FOUND")
-
-    if not hasattr(service, "get_all_tag_statuses"):
-        raise HTTPException(status_code=400, detail="PLUGIN_DOES_NOT_SUPPORT_TAG_EDITING")
-
-    try:
-        # get_all_tag_statuses is async and returns dict from CSV
-        result = await service.get_all_tag_statuses()
-        return {"statuses": result}
-    except Exception as exc:
-        logger.exception("Failed to get tag statuses for plugin %%s", PLUGIN_NAME)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.put("/statuses")
-async def update_plugin_tag_statuses(payload: TagStatusUpdate, db: Session = Depends(get_db)):
-    """Update tag enabled statuses for a plugin."""
-    _require_plugin_active(db, PLUGIN_NAME)
-
-    service = None
-    for svc in services_registry.services.list():
-        if getattr(svc, "plugin_name", None) == PLUGIN_NAME:
-            service = svc
-            break
-
-    if not service:
-        raise HTTPException(status_code=404, detail="PLUGIN_SERVICE_NOT_FOUND")
-
-    if not hasattr(service, "update_tag_enabled_status"):
-        raise HTTPException(status_code=400, detail="PLUGIN_DOES_NOT_SUPPORT_TAG_EDITING")
-
-    try:
-        result = service.update_tag_enabled_status(
-            tag_statuses=payload.tag_statuses,
-            enabled_tags=payload.enabled_tags,
-            disabled_tags=payload.disabled_tags
-        )
-        return result
-    except Exception as exc:
-        logger.exception("Failed to update tag statuses for plugin %%s", PLUGIN_NAME)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

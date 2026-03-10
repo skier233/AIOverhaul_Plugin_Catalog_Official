@@ -143,13 +143,9 @@ class SkierAITaggingService(RemoteServiceBase):
     # Tag configuration methods (for plugin endpoints)
     # ------------------------------------------------------------------
 
-    async def get_available_tags_data(self, include_disabled: bool = False) -> dict:
+    async def get_available_tags_data(self) -> dict:
         """Get available tags from CSV file with full settings.
-        
-        Args:
-            include_disabled: If True, include all tags regardless of enabled status.
-                           If False (default), only return enabled tags.
-        
+
         Returns:
             dict with 'tags' (full settings), 'models', and 'defaults' keys.
         """
@@ -197,11 +193,6 @@ class SkierAITaggingService(RemoteServiceBase):
                     
                     # Get resolved settings for this tag
                     settings = tag_config_obj.resolve(tag_name)
-                    
-                    # Check if tag should be included based on enabled status
-                    if not include_disabled:
-                        if not settings.enabled:
-                            continue
                     
                     # Get category from CSV row
                     category = row.get('category', '').strip() or 'Other'
@@ -259,58 +250,6 @@ class SkierAITaggingService(RemoteServiceBase):
             'loaded_categories': list(loaded_categories),
             'defaults': defaults
         }
-
-    def get_enabled_tags_list(self) -> list[str]:
-        """Get list of enabled tag names (normalized, lowercase)."""
-        from . import tag_config
-        tag_config_obj = tag_config.get_tag_configuration()
-        return tag_config_obj.get_enabled_tags()
-
-    async def get_all_tag_statuses(self) -> dict[str, bool]:
-        """Get all tag enabled statuses from CSV file.
-        
-        Returns:
-            Dictionary mapping tag names (normalized, lowercase) to enabled status.
-        """
-        from . import tag_config
-        
-        # Get statuses from CSV only (CSV is the source of truth)
-        tag_config_obj = tag_config.get_tag_configuration()
-        return tag_config_obj.get_all_tag_statuses()
-
-    def update_tag_enabled_status(self, tag_statuses: dict[str, bool] | None = None, enabled_tags: list[str] | None = None, disabled_tags: list[str] | None = None) -> dict:
-        """Update enabled status for tags.
-        
-        Args:
-            tag_statuses: Dictionary mapping tag names (normalized, lowercase) to enabled status (preferred)
-            enabled_tags: List of tag names to enable (alternative to tag_statuses)
-            disabled_tags: List of tag names to disable (alternative to tag_statuses)
-        
-        Returns:
-            dict with 'status' and 'updated' count
-        """
-        from . import tag_config
-        tag_config_obj = tag_config.get_tag_configuration()
-        
-        # If tag_statuses provided, use it directly
-        if tag_statuses is not None:
-            tag_config_obj.update_tag_enabled_status(tag_statuses)
-            return {'status': 'ok', 'updated': len(tag_statuses)}
-        
-        # Otherwise, get current statuses and update based on enabled/disabled lists
-        current_statuses = tag_config_obj.get_all_tag_statuses()
-        updated_map = dict(current_statuses)
-        
-        if enabled_tags:
-            for tag in enabled_tags:
-                updated_map[tag.lower()] = True
-        
-        if disabled_tags:
-            for tag in disabled_tags:
-                updated_map[tag.lower()] = False
-        
-        tag_config_obj.update_tag_enabled_status(updated_map)
-        return {'status': 'ok', 'updated': len(updated_map)}
 
     def update_tag_settings(self, tag_settings: dict) -> dict:
         """Update full tag settings for multiple tags.
