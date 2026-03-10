@@ -146,41 +146,16 @@
         // Extract loaded categories from active models
         const loadedCategoriesList = availableResponse.loaded_categories || [];
         
-        // Normalize category names by removing/replacing spaces, dashes, underscores, dots, etc.
-        // This allows "Body Parts" to match "bodyparts", "Sexual Actions" to match "actions", etc.
-        function normalizeCategory(cat) {
-          if (!cat) return '';
-          return cat.toLowerCase()
-            .replace(/[\s\-_\.]+/g, '') // Replace spaces, dashes, underscores, dots with nothing
-            .trim();
-        }
-        
         const loadedCategoriesSet = new Set(loadedCategoriesList.map(normalizeCategory));
-        setLoadedCategories(new Set(loadedCategoriesList)); // Store original case for display
+        setLoadedCategories(loadedCategoriesSet); // Store normalized names for matching
         
-        // Build tag settings map from tags, filtering by loaded categories
+        // Build tag settings map from all tags (no filtering — show all categories)
         const settingsMap = {};
         tags.forEach(function(tagInfo) {
           const tagName = tagInfo.tag || tagInfo.name || '';
           const normalized = tagName.toLowerCase();
           const category = tagInfo.category || 'Other';
-          const categoryNormalized = normalizeCategory(category);
-          
-          // Filter: only include tags whose category contains a loaded model category (case-insensitive, normalized)
-          // If no models are loaded (empty set), show all tags (graceful degradation)
-          if (loadedCategoriesSet.size > 0) {
-            let matches = false;
-            // Check if any loaded category is contained in the tag category (or vice versa)
-            loadedCategoriesSet.forEach(function(loadedCat) {
-              if (categoryNormalized.includes(loadedCat) || loadedCat.includes(categoryNormalized)) {
-                matches = true;
-              }
-            });
-            if (!matches) {
-              return; // Skip this tag - its category doesn't match any loaded model category
-            }
-          }
-          
+
           settingsMap[normalized] = {
             tagName: tagName,
             category: category,
@@ -248,6 +223,18 @@
     const smallBtn = { fontSize: 11, padding: '4px 8px', background: '#2a2a2a', color: '#eee', border: '1px solid #444', borderRadius: 3, cursor: 'pointer' };
     const labelTitle = field && field.description ? String(field.description) : undefined;
     const labelEl = React.createElement('span', { title: labelTitle }, field.label || field.key);
+
+    // Normalize category name for matching (remove spaces, dashes, underscores, dots)
+    function normalizeCategory(cat) {
+      if (!cat) return '';
+      return cat.toLowerCase()
+        .replace(/[\s\-_\.]+/g, '')
+        .trim();
+    }
+
+    function isCategoryLoaded(category) {
+      return loadedCategories.has(normalizeCategory(category));
+    }
 
     // Helper functions
     function updateTagSetting(normalized, field, value) {
@@ -380,7 +367,7 @@
           }, 'Configure tag settings per tag: Scene Tags, Markers, and Images can be independently toggled. Changes are saved to tag_settings.csv.'),
           loadedCategories.size > 0 && React.createElement('div', {
             style: { fontSize: 11, color: '#888', marginBottom: 12, padding: '8px 12px', background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 4 }
-          }, 'Showing tags for loaded model categories: ' + Array.from(loadedCategories).sort().join(', ') + '. Tags from other categories are hidden because their models are not loaded.'),
+          }, 'Categories with active models are highlighted in blue. Gray categories have no model currently loaded.'),
           loading ? React.createElement('div', {
             style: { padding: 40, textAlign: 'center', fontSize: 12, opacity: 0.7 }
           }, 'Loading tags from CSV...') :
@@ -408,21 +395,22 @@
                       display: 'flex',
                       alignItems: 'center',
                       padding: '8px 12px',
-                      background: '#1a1a1a',
+                      background: isCategoryLoaded(category) ? '#1a2a3a' : '#1a1a1a',
                       borderBottom: isExpanded ? '1px solid #2a2a2a' : 'none',
                       cursor: 'pointer',
                       userSelect: 'none'
                     },
+                    title: isCategoryLoaded(category) ? 'Model Active' : 'Model Not Active',
                     onClick: function() { toggleSection(category); }
                   },
                     React.createElement('span', {
-                      style: { marginRight: 8, fontSize: 12, fontWeight: 'bold', color: '#ddd' }
+                      style: { marginRight: 8, fontSize: 12, fontWeight: 'bold', color: isCategoryLoaded(category) ? '#6cb4ee' : '#777' }
                     }, isExpanded ? '▼' : '▶'),
                     React.createElement('span', {
-                      style: { flex: 1, fontSize: 13, fontWeight: 'bold', color: '#eee' }
+                      style: { flex: 1, fontSize: 13, fontWeight: 'bold', color: isCategoryLoaded(category) ? '#8cc8ff' : '#999' }
                     }, category),
                     React.createElement('span', {
-                      style: { fontSize: 11, color: '#999', marginRight: 12 }
+                      style: { fontSize: 11, color: isCategoryLoaded(category) ? '#6cb4ee' : '#666', marginRight: 12 }
                     }, enabledCount + '/' + totalCount),
                     React.createElement('button', {
                       style: Object.assign({}, smallBtn, {
@@ -464,12 +452,18 @@
                       },
                         // Tag name (bold)
                         React.createElement('span', {
+                          title: tagName,
                           style: {
                             fontSize: 12,
                             fontWeight: 'bold',
                             color: allOff ? '#666' : '#ddd',
-                            minWidth: '120px',
-                            flexShrink: 0
+                            width: '140px',
+                            minWidth: '140px',
+                            maxWidth: '140px',
+                            flexShrink: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
                           }
                         }, tagName),
                         // Inline controls
