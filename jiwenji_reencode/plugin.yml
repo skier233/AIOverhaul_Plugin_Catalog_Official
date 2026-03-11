@@ -9,7 +9,7 @@ depends_on: []
 pip_dependencies: []
 settings:
   - key: tag_on_failure
-    label: Tag on Failure
+    label: Add Tag Indicating Conversion Failed
     type: boolean
     default: true
     description: "Add a tag to scenes that fail re-encoding"
@@ -25,7 +25,7 @@ settings:
     description: "Delete the original file after a successful re-encode"
 
   - key: tag_after_reencode
-    label: "Tag After Re-encode - Requires Skier AI Tagging Plugin"
+    label: "Start Skier AI Tagging Job After Successful Re-encode - Requires Skier AI Tagging Plugin"
     type: boolean
     default: true
     description: "Automatically run AI tagging after a successful re-encode"
