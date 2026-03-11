@@ -328,30 +328,16 @@ async def _poll_for_new_scene(file_path: str, timeout: float = 30) -> int | None
     return None
 
 
-async def _poll_for_rescan_complete(scene_id: int, timeout: float = 30) -> bool:
-    """Wait until Stash reports the scene as HEVC."""
-    elapsed = 0.0
-    while elapsed < timeout:
-        info = await stash_helpers.get_scene_file_info(scene_id)
-        if info and info.get("video_codec") == "hevc":
-            return True
-        await asyncio.sleep(2)
-        elapsed += 2
-    return False
-
-
 async def _chain_ai_tagging(scene_id: int, file_path: str, *, group_id: str | None = None) -> bool:
     """Chain into skier_aitagging after re-encode if the plugin is available.
+
+    We already have the scene ID from the reencode result, so we submit the
+    tagging job directly — no need to wait for Stash's rescan to finish.
 
     When group_id is set, the tagging task becomes a child of the reencode
     controller and bypasses the global concurrency limit (the user explicitly
     opted in to parallel execution via the ``tag_in_parallel`` setting).
     """
-    rescan_ok = await _poll_for_rescan_complete(scene_id)
-    if not rescan_ok:
-        _log.warning("Rescan timeout for scene %s; skipping AI tagging chain", scene_id)
-        return False
-
     try:
         from stash_ai_server.actions.registry import registry as action_registry
 

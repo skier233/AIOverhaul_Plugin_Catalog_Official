@@ -360,8 +360,8 @@ def build_encode_cmd(
     else:
         cmd += ["-c:a", "copy"]
     cmd += [
-        "-c:s", "copy",
-        "-map", "0",
+        "-map", "0:v",
+        "-map", "0:a?",
         "-f", fmt,
         "-progress", "pipe:1",
         "-nostats",
