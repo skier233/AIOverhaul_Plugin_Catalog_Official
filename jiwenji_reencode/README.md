@@ -129,21 +129,35 @@ Once set up, you'll see these actions on the Stash scenes page:
 
 All settings are configurable in the AI Overhaul plugin settings UI.
 
+### Top-Level Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Tag on Failure | true | Add a tag to scenes that fail re-encoding |
+| Failure Tag Name | `reencode_failed` | Name of the tag applied on failure |
+| Delete Original | true | Delete original file after successful encode |
+
+### Advanced Settings (collapsible panel)
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Worker URL | `http://localhost:4154` | URL of the reencode_worker sidecar |
-| Quality Level (CQ) | 28 | NVENC quality (0–51, lower = better) |
+| Max Concurrent Encodes | -1 (auto) | Set to -1 to auto-detect from GPU engine count |
+| Quality Level (CQ) | 28 | NVENC constant-quality (0–51, lower = better) |
 | Low-Bitrate CQ | 34 | CQ for already-compact files |
 | NVENC Preset | p7 | p1 = fastest, p7 = best compression |
 | Skip HEVC Files | true | Skip files already in H.265 |
-| Delete Original | true | Delete original after successful encode |
+| Skip Previously Failed | true | Skip scenes tagged with the failure tag |
+| Skip Incompatible Containers | false | Skip WMV/AVI/FLV/3GP/MPEG instead of remuxing to MP4 |
 | Output Suffix | *(empty)* | e.g. `_hevc`. Empty = replace in-place |
 | Min Savings % | 15 | Reject encodes below this savings threshold |
-| Max Concurrent | 0 | 0 = auto-detect from GPU |
-| GPU Index | 0 | For multi-GPU systems |
+| GPU Index | 0 | GPU device index for multi-GPU systems |
 | Enable Retries | true | Retry with more aggressive CQ on failure |
-| Copy Metadata on Suffix | true | Copy tags/performers/etc. when using suffix mode |
+| Aggressive Retry CQ | 34 | CQ for first retry attempt |
+| Ultra-Aggressive CQ Ceiling | 40 | Max CQ for ultra-aggressive retry chain |
+| Copy Metadata on Suffix | true | Copy tags/performers/etc. to new scene when using suffix mode |
 | Tag After Re-encode | false | Chain into AI tagging after successful encode |
+| Run AI Tagging in Parallel | false | OFF: wait for tagging to finish before encoding, defer chained tagging. ON: run both simultaneously (more resources, may cause instability) |
 
 ## Troubleshooting
 
