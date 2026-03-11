@@ -483,10 +483,10 @@ async def reencode_file(
     fmt = FORMAT_MAP.get(ext, "mp4")
     format_changed = False
     if fmt in _HEVC_INCOMPATIBLE_FORMATS:
-        if settings.get("skip_incompatible_container", False):
+        if not settings.get("remux_incompatible_container", True):
             return EncodeResult(
                 success=True, skipped=True,
-                skip_reason=f"Container {ext} cannot hold HEVC (skip enabled)",
+                skip_reason=f"Container {ext} cannot hold HEVC (remux disabled)",
                 original_size=original_size,
             )
         _log.info("Container %r cannot hold HEVC; will output as MP4", fmt)

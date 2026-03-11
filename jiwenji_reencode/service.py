@@ -139,6 +139,8 @@ async def _recover_worker_jobs(service) -> None:
 
     Creates a real controller task so the dashboard shows live progress.
     For already-completed jobs, triggers Stash rescans immediately.
+    After recovering active worker jobs, checks the persisted batch queue and
+    re-spawns child tasks for any remaining scenes.
     """
     worker_url = service.worker_url
     try:
@@ -151,11 +153,22 @@ async def _recover_worker_jobs(service) -> None:
     running_jobs = [j for j in jobs if not j.get("done") and not j.get("collected")]
     completed_jobs = [j for j in jobs if j.get("done") and not j.get("collected")]
 
-    if not running_jobs and not completed_jobs:
+    # Fetch persisted batch state (includes the full scene queue)
+    batch_state = {}
+    try:
+        batch_state = await _worker_request(worker_url, "GET", "/batch")
+    except Exception:
+        pass
+
+    has_running = bool(running_jobs)
+    has_queue = bool(batch_state.get("queue"))
+
+    if not running_jobs and not completed_jobs and not has_queue:
         return
 
-    _log.info("Recovery: found %d running, %d completed uncollected job(s)",
-              len(running_jobs), len(completed_jobs))
+    _log.info("Recovery: found %d running, %d completed uncollected job(s), queue=%s",
+              len(running_jobs), len(completed_jobs),
+              f"{len(batch_state.get('queue', []))} scenes" if has_queue else "none")
 
     # Handle completed-uncollected jobs: trigger rescans
     for job in completed_jobs:
@@ -175,8 +188,7 @@ async def _recover_worker_jobs(service) -> None:
         except Exception:
             pass
 
-    # Handle running jobs: create a controller task that polls them
-    if not running_jobs:
+    if not has_running and not has_queue:
         return
 
     # Submit a recovery controller task
@@ -184,21 +196,17 @@ async def _recover_worker_jobs(service) -> None:
     ctx = ContextInput(page="scenes", entity_id=None, is_detail_view=False, selected_ids=[])
 
     async def _recovery_controller(ctx, params, task_record):
-        return await _poll_recovered_jobs(worker_url, running_jobs, task_record, service)
+        return await _poll_recovered_jobs(worker_url, running_jobs, task_record, service, batch_state)
 
     task = task_manager.submit(spec, _recovery_controller, ctx, {}, TaskPriority.high)
-    _log.info("Recovery: created controller task %s for %d running job(s)", task.id, len(running_jobs))
+    _log.info("Recovery: created controller task %s for %d running job(s) + queue resumption",
+              task.id, len(running_jobs))
 
 
-async def _poll_recovered_jobs(worker_url: str, jobs: list, task_record: TaskRecord, service) -> dict:
-    """Poll recovered running jobs until all finish, emitting dashboard-compatible progress."""
-    # Restore batch state from worker (total scenes, prior completed/failed/skipped/savings)
-    batch_state = {}
-    try:
-        batch_state = await _worker_request(worker_url, "GET", "/batch")
-    except Exception:
-        pass
-
+async def _poll_recovered_jobs(
+    worker_url: str, jobs: list, task_record: TaskRecord, service, batch_state: dict,
+) -> dict:
+    """Poll recovered running jobs until all finish, then resume remaining scenes from queue."""
     job_ids = [j["job_id"] for j in jobs]
     stash_paths = {j["job_id"]: j.get("stash_path", "") for j in jobs}
     done_set: set[str] = set()
@@ -210,6 +218,8 @@ async def _poll_recovered_jobs(worker_url: str, jobs: list, task_record: TaskRec
     base_skipped = batch_state.get("skipped", 0)
     base_completed = batch_state.get("completed", 0)
     base_savings_mb = batch_state.get("savings_mb", 0.0)
+    needs_tagging = batch_state.get("tag_after_reencode", False)
+    tag_in_parallel = batch_state.get("tag_in_parallel", True)
 
     # Track new completions from recovered jobs only
     new_success = 0
@@ -219,6 +229,7 @@ async def _poll_recovered_jobs(worker_url: str, jobs: list, task_record: TaskRec
 
     num_recovered_jobs = len(job_ids)
 
+    # ── Phase 1: Poll in-flight worker jobs ──
     while len(done_set) < num_recovered_jobs:
         if getattr(task_record, "cancel_requested", False):
             for jid in job_ids:
@@ -273,7 +284,7 @@ async def _poll_recovered_jobs(worker_url: str, jobs: list, task_record: TaskRec
         total_skipped = base_skipped + new_skipped
         total_savings_mb = base_savings_mb + round(new_savings_bytes / (1024 * 1024), 1)
 
-        task_manager.emit_progress(task_record, {
+        recovered_progress = {
             "completed": total_completed,
             "total": batch_total,
             "running": num_recovered_jobs - len(done_set),
@@ -283,10 +294,138 @@ async def _poll_recovered_jobs(worker_url: str, jobs: list, task_record: TaskRec
             "status_line": f"{total_completed}/{batch_total} (recovered)",
             "savings_mb": total_savings_mb,
             "workers": workers_detail,
-        })
+            "tag_after_reencode": needs_tagging,
+        }
+        if batch_state.get("tagging"):
+            recovered_progress["tagging"] = batch_state["tagging"]
+        task_manager.emit_progress(task_record, recovered_progress)
 
         if len(done_set) < num_recovered_jobs:
             await asyncio.sleep(2.0)
+
+    # ── Phase 2: Resume remaining scenes from the persisted queue ──
+    full_queue = batch_state.get("queue", [])
+    completed_scene_ids = set(batch_state.get("completed_scene_ids", []))
+
+    # Also count scenes finished by the recovered worker jobs (from stash_paths → scene mapping)
+    # We don't have scene IDs for worker jobs directly, so rely on completed_scene_ids from batch state.
+    # The in-flight jobs that just completed above will be handled when their child tasks run.
+
+    remaining_scenes = [s for s in full_queue if s not in completed_scene_ids]
+
+    if remaining_scenes and not getattr(task_record, "cancel_requested", False):
+        _log.info("Recovery: resuming %d remaining scenes from persisted queue (of %d total)",
+                   len(remaining_scenes), len(full_queue))
+
+        # Re-spawn child tasks for remaining scenes
+        params = {"service": service}
+        task_priority = TaskPriority.normal
+
+        spawn_result = await spawn_chunked_tasks(
+            parent_task=task_record,
+            parent_context=ContextInput(page="scenes", entity_id=None, is_detail_view=False, selected_ids=[]),
+            handler=reencode_scene_task,
+            items=remaining_scenes,
+            chunk_size=1,
+            params=params,
+            priority=task_priority,
+            hold_children=False,
+            mark_parent_controller=False,
+        )
+        child_ids = spawn_result.get("spawned", [])
+        terminal_statuses = (TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled)
+
+        # Hold loop for resumed scenes
+        while True:
+            children = [task_manager.get(cid) for cid in child_ids]
+            children = [c for c in children if c is not None]
+
+            r_done = 0
+            r_running_workers = []
+            r_workers_detail = []
+            r_failed = 0
+            r_skipped = 0
+            r_success = 0
+            r_savings_bytes = 0
+            r_original_bytes = 0
+            r_completed_ids = []
+
+            for child in children:
+                if child.status in terminal_statuses:
+                    r_done += 1
+                    cr = getattr(child, "result", None)
+                    if child.status == TaskStatus.failed:
+                        r_failed += 1
+                    elif isinstance(cr, dict):
+                        st = cr.get("status", "")
+                        if st == "failed":
+                            r_failed += 1
+                        elif st == "skipped" or cr.get("skipped"):
+                            r_skipped += 1
+                        else:
+                            r_success += 1
+                            orig = cr.get("original_size", 0)
+                            new = cr.get("new_size", 0)
+                            if orig and new:
+                                r_original_bytes += orig
+                                r_savings_bytes += orig - new
+                        if cr.get("scene_id"):
+                            r_completed_ids.append(cr["scene_id"])
+                elif child.status == TaskStatus.running:
+                    wp = _get_child_progress_dict(child)
+                    r_running_workers.append(f"w{len(r_running_workers) + 1}:{wp['percent']:.1f}%")
+                    r_workers_detail.append(wp)
+
+            # Combined totals: baseline + worker recovery + resumed children
+            grand_completed = base_completed + len(done_set) + r_done
+            grand_success = base_success + new_success + r_success
+            grand_failed = base_failed + new_failed + r_failed
+            grand_skipped = base_skipped + new_skipped + r_skipped
+            grand_savings = base_savings_mb + round((new_savings_bytes + r_savings_bytes) / (1024 * 1024), 1)
+
+            progress_payload = {
+                "completed": grand_completed,
+                "total": batch_total,
+                "running": len(r_running_workers),
+                "failed": grand_failed,
+                "skipped": grand_skipped,
+                "success": grand_success,
+                "status_line": f"{grand_completed}/{batch_total} (recovered)",
+                "savings_mb": grand_savings,
+                "workers": r_workers_detail,
+                "tag_after_reencode": needs_tagging,
+            }
+
+            # Persist updated batch state
+            all_completed_ids = list(completed_scene_ids) + r_completed_ids
+            batch_persist = dict(progress_payload)
+            batch_persist["queue"] = full_queue
+            batch_persist["completed_scene_ids"] = all_completed_ids
+            batch_persist["tag_in_parallel"] = tag_in_parallel
+            try:
+                await _worker_request(worker_url, "PUT", "/batch", batch_persist)
+            except Exception:
+                pass
+
+            task_manager.emit_progress(task_record, progress_payload)
+
+            pending = [c for c in children if c.status not in terminal_statuses]
+            if not pending:
+                # Update final counts
+                new_success += r_success
+                new_failed += r_failed
+                new_skipped += r_skipped
+                new_savings_bytes += r_savings_bytes
+                break
+            if getattr(task_record, "cancel_requested", False):
+                break
+            await asyncio.sleep(1.0)
+
+    # Clear batch state on worker now that we're done
+    try:
+        await _worker_request(worker_url, "PUT", "/batch", {})
+    except Exception:
+        pass
 
     final_success = base_success + new_success
     final_failed = base_failed + new_failed
@@ -294,7 +433,10 @@ async def _poll_recovered_jobs(worker_url: str, jobs: list, task_record: TaskRec
     final_savings = base_savings_mb + round(new_savings_bytes / (1024 * 1024), 1)
     return {
         "status": "recovered",
-        "message": f"Recovery complete: {final_success} succeeded, {final_failed} failed, {final_skipped} skipped. Savings: {final_savings} MB",
+        "message": (
+            f"Recovery complete: {final_success} succeeded, {final_failed} failed, "
+            f"{final_skipped} skipped. Savings: {final_savings} MB"
+        ),
         "scenes_completed": final_success,
         "scenes_failed": final_failed,
         "scenes_skipped": final_skipped,
@@ -399,20 +541,20 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
             aliases = CODEC_FAMILIES.get(family_key, frozenset())
             if codec in aliases:
                 # Even though we skip re-encoding, still chain AI tagging if enabled
-                tag_queued = False
+                tag_task_id = None
                 needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
                 if needs_tagging:
                     tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), True)
                     parent_id = getattr(task_record, "group_id", None) or task_record.id
                     group = parent_id if tag_in_parallel else None
-                    tag_queued = await _chain_ai_tagging(scene_id, stash_path, group_id=group)
+                    tag_task_id = await _chain_ai_tagging(scene_id, stash_path, group_id=group)
                 return {
                     "scene_id": scene_id,
                     "status": "skipped",
                     "message": f"Scene #{scene_id}: already {family_key.upper()}, skipped.",
                     "skipped": True,
-                    "tag_queued": tag_queued,
-                    "needs_tagging": needs_tagging and not tag_queued,
+                    "tag_task_id": tag_task_id,
+                    "needs_tagging": needs_tagging and not tag_task_id,
                     "target_scene_id": scene_id,
                 }
 
@@ -446,20 +588,20 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
 
     if result.get("skipped"):
         # Worker skipped (e.g. low bitrate) — still chain AI tagging if enabled
-        tag_queued = False
+        tag_task_id = None
         needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
         if needs_tagging:
             tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), True)
             parent_id = getattr(task_record, "group_id", None) or task_record.id
             group = parent_id if tag_in_parallel else None
-            tag_queued = await _chain_ai_tagging(scene_id, stash_path, group_id=group)
+            tag_task_id = await _chain_ai_tagging(scene_id, stash_path, group_id=group)
         return {
             "scene_id": scene_id,
             "status": "skipped",
             "message": f"Scene #{scene_id}: {result.get('skip_reason', 'skipped')}.",
             "skipped": True,
-            "tag_queued": tag_queued,
-            "needs_tagging": needs_tagging and not tag_queued,
+            "tag_task_id": tag_task_id,
+            "needs_tagging": needs_tagging and not tag_task_id,
             "target_scene_id": scene_id,
         }
 
@@ -523,13 +665,14 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
     # 9. Tag after re-encode (if enabled)
     #    When tag_in_parallel is False, the controller defers tagging until all
     #    encodes finish, so we only chain here when parallel mode is ON.
+    tag_task_id = None
     needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
     tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), True)
     if needs_tagging and tag_in_parallel:
         # Use parent's group_id so chained tag task is a child of the same controller,
         # bypassing the global concurrency limit (user opted in to parallel).
         parent_id = getattr(task_record, "group_id", None) or task_record.id
-        tag_queued = await _chain_ai_tagging(target_scene_id, output_stash_path, group_id=parent_id)
+        tag_task_id = await _chain_ai_tagging(target_scene_id, output_stash_path, group_id=parent_id)
 
     original_size = result.get("original_size", 0)
     new_size = result.get("new_size", 0)
@@ -546,8 +689,8 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
         "new_size": new_size,
         "savings_pct": savings_pct,
         "method_used": result.get("method_used"),
-        "tag_queued": tag_queued,
-        "needs_tagging": needs_tagging and not tag_queued,
+        "tag_task_id": tag_task_id,
+        "needs_tagging": needs_tagging and not tag_task_id,
         "target_scene_id": target_scene_id,
     }
 
@@ -564,11 +707,11 @@ async def _poll_for_new_scene(file_path: str, timeout: float = 30) -> int | None
     return None
 
 
-async def _chain_ai_tagging(scene_id: int, file_path: str, *, group_id: str | None = None) -> bool:
+async def _chain_ai_tagging(scene_id: int, file_path: str, *, group_id: str | None = None) -> str | None:
     """Chain into skier_aitagging after re-encode if the plugin is available.
 
-    We already have the scene ID from the reencode result, so we submit the
-    tagging job directly — no need to wait for Stash's rescan to finish.
+    Returns the task ID of the submitted tagging task, or ``None`` if tagging
+    could not be queued.
 
     When group_id is set, the tagging task becomes a child of the reencode
     controller and bypasses the global concurrency limit (the user explicitly
@@ -585,15 +728,15 @@ async def _chain_ai_tagging(scene_id: int, file_path: str, *, group_id: str | No
         resolved = action_registry.resolve("skier.ai_tag.scene", tag_ctx)
         if resolved:
             definition, handler = resolved
-            task_manager.submit(definition, handler, tag_ctx, {}, TaskPriority.normal, group_id=group_id)
-            _log.info("Queued AI tagging for scene %s (group=%s)", scene_id, group_id)
-            return True
+            task = task_manager.submit(definition, handler, tag_ctx, {}, TaskPriority.normal, group_id=group_id)
+            _log.info("Queued AI tagging for scene %s (group=%s) → task %s", scene_id, group_id, task.id)
+            return task.id
         else:
             _log.warning("skier.ai_tag.scene action not found; AI tagging skipped")
-            return False
+            return None
     except Exception as exc:
         _log.warning("Failed to chain AI tagging for scene %s: %s", scene_id, exc)
-        return False
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -622,9 +765,9 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
         result = await reencode_scene_task(ctx, params, task_record)
         # Deferred tagging for single scene (when parallel is off)
         if isinstance(result, dict) and result.get("needs_tagging") and result.get("target_scene_id"):
-            await _chain_ai_tagging(result["target_scene_id"], "")
-            result["tag_queued"] = True
-            result["needs_tagging"] = False
+            tid = await _chain_ai_tagging(result["target_scene_id"], "")
+            result["tag_task_id"] = tid
+            result["needs_tagging"] = not tid
         return result
 
     # Multiple scenes: spawn child tasks (don't hold — we'll poll ourselves for richer progress)
@@ -647,8 +790,63 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
     )
     child_ids = spawn_result.get("spawned", [])
     total = len(child_ids)
+    needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
+    terminal_statuses = (TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled)
 
-    # Custom hold loop with rich progress reporting
+    # Persist the full scene queue so recovery can resume remaining scenes
+    try:
+        await _worker_request(service.worker_url, "PUT", "/batch", {
+            "queue": [int(s) for s in selected_items],
+            "completed_scene_ids": [],
+            "total": total,
+            "completed": 0,
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "savings_mb": 0.0,
+            "tag_after_reencode": needs_tagging,
+            "tag_in_parallel": tag_in_parallel,
+        })
+    except Exception:
+        pass
+
+    # Helper: scan tag children belonging to this controller
+    def _get_tag_stats() -> dict:
+        """Count tagging task states for all tag children of this controller."""
+        tag_children = [
+            t for t in task_manager.tasks.values()
+            if t.group_id == task_record.id and t.action_id == "skier.ai_tag.scene"
+        ]
+        tag_total = len(tag_children)
+        tag_done = 0
+        tag_running = 0
+        tag_queued = 0
+        tag_failed = 0
+        for t in tag_children:
+            if t.status in terminal_statuses:
+                tag_done += 1
+                # Check if the task completed but reported failure in its result
+                if t.status == TaskStatus.failed or (
+                    t.status == TaskStatus.completed
+                    and isinstance(getattr(t, "result", None), dict)
+                    and getattr(t, "result", {}).get("status") == "failed"
+                ):
+                    tag_failed += 1
+            elif t.status == TaskStatus.running:
+                tag_running += 1
+            elif t.status == TaskStatus.queued:
+                tag_queued += 1
+        tag_success = tag_done - tag_failed
+        return {
+            "total": tag_total,
+            "done": tag_done,
+            "running": tag_running,
+            "queued": tag_queued,
+            "failed": tag_failed,
+            "success": tag_success,
+        }
+
+    # ── Phase 1: Encode hold loop with rich progress ──
     while True:
         children = [task_manager.get(cid) for cid in child_ids]
         children = [c for c in children if c is not None]
@@ -663,7 +861,7 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
         total_original_bytes = 0
 
         for idx, child in enumerate(children):
-            if child.status in (TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled):
+            if child.status in terminal_statuses:
                 done += 1
                 child_result = getattr(child, "result", None)
                 if child.status == TaskStatus.failed:
@@ -708,16 +906,35 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
             "status_line": status_line,
             "savings_mb": round(total_savings_bytes / (1024 * 1024), 1),
             "workers": workers_detail,
+            "tag_after_reencode": needs_tagging,
         }
+
+        # Include live tagging stats during encode phase (parallel mode)
+        if needs_tagging and tag_in_parallel:
+            tag_stats = _get_tag_stats()
+            if tag_stats["total"] > 0:
+                progress_payload["tagging"] = tag_stats
+
         task_manager.emit_progress(task_record, progress_payload)
 
-        # Persist batch state on worker for crash recovery
+        # Persist batch state on worker for crash recovery — include the full queue
+        # and which scene IDs are done so recovery can resume the rest
+        completed_scene_ids = []
+        for child in children:
+            if child.status in terminal_statuses:
+                cr = getattr(child, "result", None)
+                if isinstance(cr, dict) and cr.get("scene_id"):
+                    completed_scene_ids.append(cr["scene_id"])
+        batch_persist = dict(progress_payload)
+        batch_persist["queue"] = [int(s) for s in selected_items]
+        batch_persist["completed_scene_ids"] = completed_scene_ids
+        batch_persist["tag_in_parallel"] = tag_in_parallel
         try:
-            await _worker_request(service.worker_url, "PUT", "/batch", progress_payload)
+            await _worker_request(service.worker_url, "PUT", "/batch", batch_persist)
         except Exception:
             pass
 
-        pending = [c for c in children if c.status not in (TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled)]
+        pending = [c for c in children if c.status not in terminal_statuses]
         if not pending:
             break
         if getattr(task_record, "cancel_requested", False):
@@ -735,6 +952,91 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
     savings_mb = round(total_savings_bytes / (1024 * 1024), 1)
     savings_pct = round((total_savings_bytes / total_original_bytes) * 100, 1) if total_original_bytes > 0 else 0.0
 
+    # ── Phase 2: Collect tag task IDs & handle deferred tagging ──
+    tag_task_ids = []
+
+    if tag_in_parallel:
+        # Parallel mode: tag tasks were already chained during encode — collect IDs from child results
+        for cid in child_ids:
+            child = task_manager.get(cid)
+            if child and isinstance(getattr(child, "result", None), dict):
+                tid = child.result.get("tag_task_id")
+                if tid:
+                    tag_task_ids.append(tid)
+    elif needs_tagging:
+        # Deferred (sequential) mode: submit AI tagging now for all scenes that need it
+        children_final = [task_manager.get(cid) for cid in child_ids]
+        scenes_to_tag = []
+        for child in children_final:
+            if child is None:
+                continue
+            cr = getattr(child, "result", None)
+            if isinstance(cr, dict) and cr.get("needs_tagging") and cr.get("target_scene_id"):
+                scenes_to_tag.append(cr["target_scene_id"])
+        if scenes_to_tag:
+            for sid in scenes_to_tag:
+                tid = await _chain_ai_tagging(sid, "", group_id=task_record.id)
+                if tid:
+                    tag_task_ids.append(tid)
+
+    # ── Phase 3: Tagging hold loop — wait for all tag tasks to finish ──
+    tag_success = 0
+    tag_failed = 0
+    if tag_task_ids and not getattr(task_record, "cancel_requested", False):
+        while True:
+            tag_tasks = [task_manager.get(tid) for tid in tag_task_ids]
+            tag_tasks = [t for t in tag_tasks if t is not None]
+
+            tag_done = sum(1 for t in tag_tasks if t.status in terminal_statuses)
+            tag_running = sum(1 for t in tag_tasks if t.status == TaskStatus.running)
+            tag_queued_count = sum(1 for t in tag_tasks if t.status == TaskStatus.queued)
+            tag_failed = sum(
+                1 for t in tag_tasks
+                if t.status == TaskStatus.failed
+                or (
+                    t.status == TaskStatus.completed
+                    and isinstance(getattr(t, "result", None), dict)
+                    and getattr(t, "result", {}).get("status") == "failed"
+                )
+            )
+            tag_success = tag_done - tag_failed
+
+            tagging_payload = {
+                "total": len(tag_task_ids),
+                "done": tag_done,
+                "running": tag_running,
+                "queued": tag_queued_count,
+                "failed": tag_failed,
+                "success": tag_success,
+            }
+
+            progress_payload = {
+                "completed": done,
+                "total": total,
+                "running": 0,
+                "failed": failed_count,
+                "skipped": skipped_count,
+                "success": success_count,
+                "status_line": f"encoded {done}/{total} | tagging {tag_done}/{len(tag_task_ids)}",
+                "savings_mb": savings_mb,
+                "workers": [],
+                "tag_after_reencode": needs_tagging,
+                "tagging": tagging_payload,
+            }
+            task_manager.emit_progress(task_record, progress_payload)
+
+            # Persist for crash recovery
+            try:
+                await _worker_request(service.worker_url, "PUT", "/batch", progress_payload)
+            except Exception:
+                pass
+
+            if tag_done >= len(tag_task_ids):
+                break
+            if getattr(task_record, "cancel_requested", False):
+                break
+            await asyncio.sleep(1.0)
+
     # Clear batch state on worker now that we're done
     try:
         await _worker_request(service.worker_url, "PUT", "/batch", {})
@@ -745,32 +1047,12 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
     if failed_count:
         status = "failed" if success_count == 0 else "partial"
 
-    # Deferred tagging: submit AI tagging for all successful scenes (sequential mode)
-    tag_count = 0
-    if not tag_in_parallel and _coerce_bool(settings.get("tag_after_reencode"), True):
-        children_final = [task_manager.get(cid) for cid in child_ids]
-        scenes_to_tag = []
-        for child in children_final:
-            if child is None:
-                continue
-            cr = getattr(child, "result", None)
-            if isinstance(cr, dict) and cr.get("needs_tagging") and cr.get("target_scene_id"):
-                scenes_to_tag.append(cr["target_scene_id"])
-        if scenes_to_tag:
-            task_manager.emit_progress(task_record, {
-                "status_line": f"Queueing AI tagging for {len(scenes_to_tag)} scene(s)...",
-            })
-            for sid in scenes_to_tag:
-                ok = await _chain_ai_tagging(sid, "")
-                if ok:
-                    tag_count += 1
-
     message = (
         f"Re-encode complete: {success_count} succeeded, {skipped_count} skipped, "
         f"{failed_count} failed. Total savings: ({savings_mb:,.1f} MB, {savings_pct}% saved)"
     )
-    if tag_count > 0:
-        message += f", {tag_count} queued for AI tagging"
+    if tag_task_ids:
+        message += f", {tag_success} tagged, {tag_failed} tag failed"
 
     return {
         "status": status,
@@ -781,6 +1063,8 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
         "scenes_skipped": skipped_count,
         "total_savings_mb": savings_mb,
         "total_savings_pct": savings_pct,
+        "tag_success": tag_success,
+        "tag_failed": tag_failed,
         "spawned": child_ids,
         "count": len(child_ids),
         "held": True,
@@ -913,7 +1197,7 @@ class ReencodeService(ServiceBase):
             "aggressive_cq": _coerce_int(adv.get("aggressive_cq"), 34),
             "ultra_aggressive_cq": _coerce_int(adv.get("ultra_aggressive_cq"), 40),
             "skip_failed_tag": _coerce_bool(adv.get("skip_failed_tag"), True),
-            "skip_incompatible_container": _coerce_bool(adv.get("skip_incompatible_container"), False),
+            "remux_incompatible_container": _coerce_bool(adv.get("remux_incompatible_container"), True),
             "copy_metadata_on_suffix": _coerce_bool(adv.get("copy_metadata_on_suffix"), True),
             "tag_after_reencode": _coerce_bool(cfg.get("tag_after_reencode") if cfg.get("tag_after_reencode") is not None else adv.get("tag_after_reencode"), True),
             "tag_in_parallel": _coerce_bool(adv.get("tag_in_parallel"), True),

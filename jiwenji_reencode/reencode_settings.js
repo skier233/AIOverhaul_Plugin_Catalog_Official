@@ -43,7 +43,7 @@
         ]
       },
       { key: 'skip_failed_tag', label: 'Skip Previously Failed', type: 'boolean', default: true, desc: 'Skip scenes tagged with the failure tag. Disable to retry failed files (e.g. after changing CQ settings)' },
-      { key: 'skip_incompatible_container', label: "Don't Remux Incompatible Containers", type: 'boolean', default: false, desc: 'Skip files in containers that cannot hold HEVC (WMV, AVI, FLV, 3GP, MPEG) instead of remuxing to MP4' },
+      { key: 'remux_incompatible_container', label: 'Remux Incompatible Containers', type: 'boolean', default: true, desc: 'Remux files in containers that cannot hold HEVC (WMV, AVI, FLV, 3GP, MPEG) to MP4. When disabled, these files are skipped.' },
       { key: 'output_suffix', label: 'Output Filename Suffix', type: 'string', default: '', desc: 'e.g. "_hevc". Empty = replace in-place' },
       { key: 'copy_metadata_on_suffix', label: 'Copy Metadata on Suffix', type: 'boolean', default: true, desc: 'Copy tags/performers/etc. to new scene when using suffix' },
       { key: 'min_savings_pct', label: 'Minimum Savings %', type: 'number', default: 15, desc: 'Reject encodes below this savings threshold' },

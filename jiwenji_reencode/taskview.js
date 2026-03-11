@@ -39,15 +39,18 @@
       var running = p.running || 0;
       var savingsMb = p.savings_mb || 0;
       var workers = p.workers || [];
+      var tagAfterReencode = !!p.tag_after_reencode;
+      var tagging = p.tagging || null;
       var pct = total > 0 ? ((completed / total) * 100).toFixed(1) : "0.0";
       var taskIsCancelling = helpers.isCancelling(task.id);
 
-      // Title
+      // Title — include "and tagging" when tagging is enabled
+      var titleVerb = tagAfterReencode ? "Re-encoding and tagging" : "Re-encoding";
       var title =
         total > 1
-          ? "Re-encoding " + total + " scenes"
+          ? titleVerb + " " + total + " scenes"
           : total === 1
-            ? "Re-encoding scene"
+            ? titleVerb + " scene"
             : "Re-encode " + (task.status === "queued" ? "(queued)" : "");
 
       // Total progress bar (striped animated)
@@ -64,7 +67,7 @@
         ),
       ]);
 
-      // Counters row
+      // Counters row — encode phase
       var counters = [];
       if (running > 0)
         counters.push(
@@ -72,7 +75,7 @@
         );
       if (success > 0)
         counters.push(
-          h("span", { key: "ok", className: "ai-tv__counter ai-tv__counter--success" }, success + " done")
+          h("span", { key: "ok", className: "ai-tv__counter ai-tv__counter--success" }, success + " encoded")
         );
       if (failed > 0)
         counters.push(
@@ -86,6 +89,26 @@
         counters.push(
           h("span", { key: "sav", className: "ai-tv__counter ai-tv__counter--savings" }, formatSavings(savingsMb) + " saved")
         );
+
+      // Tagging counters
+      if (tagging && tagging.total > 0) {
+        if (tagging.running > 0)
+          counters.push(
+            h("span", { key: "tag-run", className: "ai-tv__counter ai-tv__counter--tagging" }, tagging.running + " tagging")
+          );
+        if (tagging.success > 0)
+          counters.push(
+            h("span", { key: "tag-ok", className: "ai-tv__counter ai-tv__counter--tagged" }, tagging.success + " tagged")
+          );
+        if (tagging.failed > 0)
+          counters.push(
+            h("span", { key: "tag-fail", className: "ai-tv__counter ai-tv__counter--tag-failed" }, tagging.failed + " tag failed")
+          );
+        if (tagging.queued > 0)
+          counters.push(
+            h("span", { key: "tag-q", className: "ai-tv__counter ai-tv__counter--tagging" }, tagging.queued + " tag queued")
+          );
+      }
 
       // Worker sections
       var workerEls = workers.map(function (w, i) {
