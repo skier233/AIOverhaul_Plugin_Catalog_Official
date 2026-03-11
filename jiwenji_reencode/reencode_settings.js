@@ -52,7 +52,7 @@
       { key: 'aggressive_cq', label: 'Aggressive Retry CQ', type: 'number', default: 34, desc: 'CQ for first retry attempt' },
       { key: 'ultra_aggressive_cq', label: 'Ultra-Aggressive CQ Ceiling', type: 'number', default: 40, desc: 'Max CQ for ultra-aggressive retry chain' },
       { key: 'tag_in_parallel', label: 'Run AI Tagging in Parallel - Requires Skier AI Tagging Plugin', type: 'boolean', default: true, desc: 'OFF: runs an AI tagging job at the end, after all re-encoding has finished. ON (default): run encoding and tagging simultaneously (uses more resources)' },
-      { key: 'rescan_after_tagging', label: 'Rescan After Tagging', type: 'boolean', default: false, desc: 'Delay Stash rescan until AI tagging completes. Required for generating marker preview images from tagger-created markers. When disabled, rescan happens immediately after encode.' }
+      { key: 'rescan_after_tagging', label: 'Delay Rescan', type: 'boolean', default: false, desc: 'Delay Stash rescan until AI tagging completes. Required for generating marker preview images from tagger-created markers. When disabled, rescan happens immediately after encode.' }
     ];
 
     var PLUGIN_NAME = 'jiwenji_reencode';
