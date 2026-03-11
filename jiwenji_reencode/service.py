@@ -772,7 +772,7 @@ def _cleanup_orphan_settings():
                     "tag_on_failure": {"type": "boolean", "label": "Tag on Failure", "default": True, "desc": "Add a tag to scenes that fail re-encoding"},
                     "reencode_failed_tag": {"type": "string", "label": "Failure Tag Name", "default": "reencode_failed", "desc": "Name of the tag to apply when re-encoding fails"},
                     "delete_after_convert": {"type": "boolean", "label": "Delete Original After Successful Convert", "default": True, "desc": "Delete the original file after a successful re-encode"},
-                    "tag_after_reencode": {"type": "boolean", "label": "Tag After Re-encode", "default": True, "desc": "Chain into AI tagging after successful re-encode"},
+                    "tag_after_reencode": {"type": "boolean", "label": "Tag After Re-encode - Requires Skier AI Tagging Plugin", "default": True, "desc": "Automatically run AI tagging after a successful re-encode"},
                     "reencode_advanced": {"type": "reencode_settings", "label": "Advanced Settings", "default": None, "desc": "Configure quality, concurrency, retry, GPU, and post-encode options"},
                 }
                 for key in _DESIRED_ORDER:

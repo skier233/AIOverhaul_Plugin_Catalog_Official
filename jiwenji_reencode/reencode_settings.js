@@ -51,7 +51,7 @@
       { key: 'aggressive_cq', label: 'Aggressive Retry CQ', type: 'number', default: 34, desc: 'CQ for first retry attempt' },
       { key: 'ultra_aggressive_cq', label: 'Ultra-Aggressive CQ Ceiling', type: 'number', default: 40, desc: 'Max CQ for ultra-aggressive retry chain' },
       { key: 'copy_metadata_on_suffix', label: 'Copy Metadata on Suffix', type: 'boolean', default: true, desc: 'Copy tags/performers/etc. to new scene when using suffix' },
-      { key: 'tag_in_parallel', label: 'Run AI Tagging in Parallel - Requires Skier AI Tagging Plugin', type: 'boolean', default: true, desc: 'OFF: wait for any running AI tagging jobs before encoding, and defer chained tagging until all encodes finish. ON (default): run encoding and tagging simultaneously (requires more resources, may cause instability)' }
+      { key: 'tag_in_parallel', label: 'Run AI Tagging in Parallel - Requires Skier AI Tagging Plugin', type: 'boolean', default: true, desc: 'OFF: runs an AI tagging job at the end, after all re-encoding has finished. ON (default): run encoding and tagging simultaneously (uses more resources)' }
     ];
 
     var PLUGIN_NAME = 'jiwenji_reencode';
