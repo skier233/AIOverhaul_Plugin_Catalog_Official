@@ -647,14 +647,20 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
         except Exception as exc:
             _log.warning("Failed to remove tag %r from scene %s: %s", fail_tag, scene_id, exc)
 
-    # 8. Trigger Stash rescan
-    await stash_helpers.trigger_rescan(output_stash_path)
+    # 8. Trigger Stash rescan (unless deferred until after tagging)
+    needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
+    rescan_after_tagging = _coerce_bool(settings.get("rescan_after_tagging"), False)
+    force_immediate = params.get("_force_immediate_rescan", False)
+    defer_rescan = rescan_after_tagging and needs_tagging and not force_immediate
 
-    # 9. Suffix mode: copy metadata to new scene
+    if not defer_rescan:
+        await stash_helpers.trigger_rescan(output_stash_path)
+
+    # 9. Suffix mode: copy metadata to new scene (requires rescan to have run)
     tag_queued = False
     target_scene_id = scene_id
 
-    if suffix and output_stash_path != stash_path and _coerce_bool(settings.get("copy_metadata_on_suffix"), True):
+    if not defer_rescan and suffix and output_stash_path != stash_path and _coerce_bool(settings.get("copy_metadata_on_suffix"), True):
         new_scene_id = await _poll_for_new_scene(output_stash_path, timeout=30)
         if new_scene_id:
             await stash_helpers.copy_scene_metadata(scene_id, new_scene_id)
@@ -662,11 +668,10 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
         else:
             _log.warning("New scene not found for %s after rescan; metadata copy skipped", output_stash_path)
 
-    # 9. Tag after re-encode (if enabled)
-    #    When tag_in_parallel is False, the controller defers tagging until all
-    #    encodes finish, so we only chain here when parallel mode is ON.
+    # 10. Tag after re-encode (if enabled)
+    #     When tag_in_parallel is False, the controller defers tagging until all
+    #     encodes finish, so we only chain here when parallel mode is ON.
     tag_task_id = None
-    needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
     tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), True)
     if needs_tagging and tag_in_parallel:
         # Use parent's group_id so chained tag task is a child of the same controller,
@@ -692,6 +697,7 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
         "tag_task_id": tag_task_id,
         "needs_tagging": needs_tagging and not tag_task_id,
         "target_scene_id": target_scene_id,
+        "deferred_rescan_path": output_stash_path if defer_rescan else None,
     }
 
 
@@ -758,10 +764,11 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
             "scenes_skipped": 0,
         }
 
-    # Single scene: run directly
+    # Single scene: run directly (no deferred rescan — no hold loop to wait for tagging)
     if len(selected_items) == 1:
         if not ctx.entity_id:
             ctx.entity_id = str(selected_items[0])
+        params["_force_immediate_rescan"] = True
         result = await reencode_scene_task(ctx, params, task_record)
         # Deferred tagging for single scene (when parallel is off)
         if isinstance(result, dict) and result.get("needs_tagging") and result.get("target_scene_id"):
@@ -954,6 +961,9 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
 
     # ── Phase 2: Collect tag task IDs & handle deferred tagging ──
     tag_task_ids = []
+    # Map tag_task_id → rescan_path for deferred rescans (rescan_after_tagging mode)
+    rescan_after_tagging = _coerce_bool(settings.get("rescan_after_tagging"), False)
+    deferred_rescan_map: dict[str, str] = {}
 
     if tag_in_parallel:
         # Parallel mode: tag tasks were already chained during encode — collect IDs from child results
@@ -963,25 +973,37 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
                 tid = child.result.get("tag_task_id")
                 if tid:
                     tag_task_ids.append(tid)
+                    rp = child.result.get("deferred_rescan_path")
+                    if rp:
+                        deferred_rescan_map[tid] = rp
     elif needs_tagging:
         # Deferred (sequential) mode: submit AI tagging now for all scenes that need it
         children_final = [task_manager.get(cid) for cid in child_ids]
         scenes_to_tag = []
+        deferred_rescan_paths: dict[int, str] = {}
         for child in children_final:
             if child is None:
                 continue
             cr = getattr(child, "result", None)
             if isinstance(cr, dict) and cr.get("needs_tagging") and cr.get("target_scene_id"):
-                scenes_to_tag.append(cr["target_scene_id"])
+                sid = cr["target_scene_id"]
+                scenes_to_tag.append(sid)
+                rp = cr.get("deferred_rescan_path")
+                if rp:
+                    deferred_rescan_paths[sid] = rp
         if scenes_to_tag:
             for sid in scenes_to_tag:
                 tid = await _chain_ai_tagging(sid, "", group_id=task_record.id)
                 if tid:
                     tag_task_ids.append(tid)
+                    rp = deferred_rescan_paths.get(sid)
+                    if rp:
+                        deferred_rescan_map[tid] = rp
 
     # ── Phase 3: Tagging hold loop — wait for all tag tasks to finish ──
     tag_success = 0
     tag_failed = 0
+    rescanned_tags: set[str] = set()  # track which deferred rescans we've fired
     if tag_task_ids and not getattr(task_record, "cancel_requested", False):
         while True:
             tag_tasks = [task_manager.get(tid) for tid in tag_task_ids]
@@ -1000,6 +1022,18 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
                 )
             )
             tag_success = tag_done - tag_failed
+
+            # Trigger deferred rescans for tag tasks that just completed
+            if deferred_rescan_map:
+                for t in tag_tasks:
+                    if t.id in deferred_rescan_map and t.id not in rescanned_tags and t.status in terminal_statuses:
+                        rescanned_tags.add(t.id)
+                        rescan_path = deferred_rescan_map[t.id]
+                        try:
+                            await stash_helpers.trigger_rescan(rescan_path)
+                            _log.info("Deferred rescan triggered for %s after tagging", rescan_path)
+                        except Exception as exc:
+                            _log.warning("Deferred rescan failed for %s: %s", rescan_path, exc)
 
             tagging_payload = {
                 "total": len(tag_task_ids),
@@ -1201,6 +1235,7 @@ class ReencodeService(ServiceBase):
             "copy_metadata_on_suffix": _coerce_bool(adv.get("copy_metadata_on_suffix"), True),
             "tag_after_reencode": _coerce_bool(cfg.get("tag_after_reencode") if cfg.get("tag_after_reencode") is not None else adv.get("tag_after_reencode"), True),
             "tag_in_parallel": _coerce_bool(adv.get("tag_in_parallel"), True),
+            "rescan_after_tagging": _coerce_bool(adv.get("rescan_after_tagging"), False),
         }
 
     # ------------------------------------------------------------------
