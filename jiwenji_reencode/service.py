@@ -204,11 +204,22 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
         for family_key in skip_codecs:
             aliases = CODEC_FAMILIES.get(family_key, frozenset())
             if codec in aliases:
+                # Even though we skip re-encoding, still chain AI tagging if enabled
+                tag_queued = False
+                needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
+                if needs_tagging:
+                    tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), True)
+                    parent_id = getattr(task_record, "group_id", None) or task_record.id
+                    group = parent_id if tag_in_parallel else None
+                    tag_queued = await _chain_ai_tagging(scene_id, stash_path, group_id=group)
                 return {
                     "scene_id": scene_id,
                     "status": "skipped",
                     "message": f"Scene #{scene_id}: already {family_key.upper()}, skipped.",
                     "skipped": True,
+                    "tag_queued": tag_queued,
+                    "needs_tagging": needs_tagging and not tag_queued,
+                    "target_scene_id": scene_id,
                 }
 
     # 3b. Skip scenes tagged with the failure tag (unless disabled)
@@ -240,11 +251,22 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
     result = await _poll_encode_job(worker_url, job_id, task_record, cancel_cb)
 
     if result.get("skipped"):
+        # Worker skipped (e.g. low bitrate) — still chain AI tagging if enabled
+        tag_queued = False
+        needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
+        if needs_tagging:
+            tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), True)
+            parent_id = getattr(task_record, "group_id", None) or task_record.id
+            group = parent_id if tag_in_parallel else None
+            tag_queued = await _chain_ai_tagging(scene_id, stash_path, group_id=group)
         return {
             "scene_id": scene_id,
             "status": "skipped",
             "message": f"Scene #{scene_id}: {result.get('skip_reason', 'skipped')}.",
             "skipped": True,
+            "tag_queued": tag_queued,
+            "needs_tagging": needs_tagging and not tag_queued,
+            "target_scene_id": scene_id,
         }
 
     if not result.get("success"):
