@@ -20,7 +20,7 @@
     // ── Advanced field definitions with hardcoded defaults ──
     var FIELDS = [
       { key: 'worker_url', label: 'Worker URL', type: 'string', default: 'http://localhost:4154', desc: 'URL of the reencode_worker sidecar container' },
-      { key: 'max_concurrent_encodes', label: 'Max Concurrent Encodes', type: 'number', default: -1, desc: 'Set to -1 to auto detect number of available encoder engines' },
+      { key: 'max_concurrent_encodes', label: 'Max Concurrent Encodes', type: 'number', default: -1, desc: 'Set to -1 to auto detect number of available encoder engines', info: 'gpu_engines' },
       { key: 'cq', label: 'Quality Level (CQ)', type: 'number', default: 28, desc: 'NVENC constant-quality level (0\u201351, lower = better)' },
       { key: 'cq_low_bitrate', label: 'Low-Bitrate CQ', type: 'number', default: 34, desc: 'CQ for already-compact files' },
       { key: 'preset', label: 'NVENC Preset', type: 'select', default: 'p7', desc: 'p1 = fastest, p7 = best compression',
@@ -43,14 +43,14 @@
         ]
       },
       { key: 'skip_failed_tag', label: 'Skip Previously Failed', type: 'boolean', default: true, desc: 'Skip scenes tagged with the failure tag. Disable to retry failed files (e.g. after changing CQ settings)' },
-      { key: 'skip_incompatible_container', label: 'Skip Incompatible Containers', type: 'boolean', default: false, desc: 'Skip files in containers that cannot hold HEVC (WMV, AVI, FLV, 3GP, MPEG) instead of remuxing to MP4' },
+      { key: 'skip_incompatible_container', label: "Don't Remux Incompatible Containers", type: 'boolean', default: false, desc: 'Skip files in containers that cannot hold HEVC (WMV, AVI, FLV, 3GP, MPEG) instead of remuxing to MP4' },
       { key: 'output_suffix', label: 'Output Filename Suffix', type: 'string', default: '', desc: 'e.g. "_hevc". Empty = replace in-place' },
+      { key: 'copy_metadata_on_suffix', label: 'Copy Metadata on Suffix', type: 'boolean', default: true, desc: 'Copy tags/performers/etc. to new scene when using suffix' },
       { key: 'min_savings_pct', label: 'Minimum Savings %', type: 'number', default: 15, desc: 'Reject encodes below this savings threshold' },
       { key: 'gpu_index', label: 'GPU Index', type: 'number', default: 0, desc: 'GPU device index for multi-GPU systems' },
-      { key: 'enable_retries', label: 'Enable Retries', type: 'boolean', default: true, desc: 'Retry with more aggressive settings on failure' },
+      { key: 'enable_retries', label: 'Enable Aggressive Retries', type: 'boolean', default: true, desc: 'Retry with more aggressive quality settings if initial encode fails to meet savings threshold' },
       { key: 'aggressive_cq', label: 'Aggressive Retry CQ', type: 'number', default: 34, desc: 'CQ for first retry attempt' },
       { key: 'ultra_aggressive_cq', label: 'Ultra-Aggressive CQ Ceiling', type: 'number', default: 40, desc: 'Max CQ for ultra-aggressive retry chain' },
-      { key: 'copy_metadata_on_suffix', label: 'Copy Metadata on Suffix', type: 'boolean', default: true, desc: 'Copy tags/performers/etc. to new scene when using suffix' },
       { key: 'tag_in_parallel', label: 'Run AI Tagging in Parallel - Requires Skier AI Tagging Plugin', type: 'boolean', default: true, desc: 'OFF: runs an AI tagging job at the end, after all re-encoding has finished. ON (default): run encoding and tagging simultaneously (uses more resources)' }
     ];
 
@@ -160,6 +160,10 @@
         });
       }
 
+      var infoPopupState = React.useState(null);
+      var infoPopup = infoPopupState[0];
+      var setInfoPopup = infoPopupState[1];
+
       // Styles
       var wrap = { position: 'relative', padding: '4px 4px 6px', border: '1px solid #2a2a2a', borderRadius: 4, background: '#101010' };
       var headerStyle = {
@@ -250,20 +254,88 @@
                   });
                 }
 
-                return React.createElement('div', { key: field.key, style: rowStyle, title: field.desc },
-                  React.createElement('span', { style: labelStyle },
-                    field.label,
-                    isChanged
-                      ? React.createElement('span', { style: { color: '#ffa657', fontSize: 10, marginLeft: 4 } }, '\u2022')
-                      : React.createElement('span', { style: defaultHintStyle }, '(default: ' + (Array.isArray(field.default) ? field.default.map(function(v) { var c = (field.chips || []).find(function(ch) { return ch.value === v; }); return c ? c.label : v; }).join(', ') : String(field.default)) + ')')
+                var infoBtn = null;
+                if (field.info === 'gpu_engines') {
+                  infoBtn = React.createElement('span', {
+                    style: {
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      width: 18, height: 18, borderRadius: '50%', fontSize: 11, fontWeight: 'bold',
+                      background: '#333', color: '#aaa', border: '1px solid #555', cursor: 'pointer',
+                      marginLeft: 6, userSelect: 'none', flexShrink: 0
+                    },
+                    onClick: function() { setInfoPopup(infoPopup === field.key ? null : field.key); },
+                    title: 'Show GPU encoder engine reference'
+                  }, '?');
+                }
+
+                var infoPanel = null;
+                if (field.info === 'gpu_engines' && infoPopup === field.key) {
+                  var trs = [
+                    ['RTX 5090', '3'], ['RTX 5080 / 5070 Ti', '2'], ['RTX 5070 / 5060 Ti / 5060', '1'],
+                    ['RTX 4090 / 4080 / 4070 Ti / 4070 / 4060 Ti / 4060', '2'],
+                    ['RTX 3090 / 3080 / 3070 / 3060 (all 30-series)', '1'],
+                    ['RTX 2080 Ti / 2080 / 2070 / 2060 (all 20-series)', '1'],
+                    ['GTX 1660 / 1650 / 1080 / 1070 / 1060 / 1050', '1'],
+                    ['RTX PRO 6000 / L40S / L40', '3'],
+                    ['RTX 6000 Ada / RTX A4000', '2\u20133'],
+                    ['RTX A6000 / A5000 / Quadro RTX', '1'],
+                  ];
+                  var tableStyle = { fontSize: 11, borderCollapse: 'collapse', width: '100%' };
+                  var thStyle = { textAlign: 'left', padding: '3px 8px', borderBottom: '1px solid #444', color: '#999' };
+                  var tdStyle = { padding: '3px 8px', borderBottom: '1px solid #2a2a2a', color: '#bbb' };
+                  var tdRight = Object.assign({}, tdStyle, { textAlign: 'center', fontWeight: 'bold', color: '#7cfc7c' });
+                  infoPanel = React.createElement('div', {
+                    style: {
+                      margin: '4px 12px 8px', padding: 10, background: '#1a1a1a',
+                      border: '1px solid #333', borderRadius: 4
+                    }
+                  },
+                    React.createElement('div', { style: { fontSize: 12, fontWeight: 'bold', color: '#ccc', marginBottom: 6 } }, 'NVIDIA NVENC Encoder Engines'),
+                    React.createElement('table', { style: tableStyle },
+                      React.createElement('thead', null,
+                        React.createElement('tr', null,
+                          React.createElement('th', { style: thStyle }, 'GPU'),
+                          React.createElement('th', { style: Object.assign({}, thStyle, { textAlign: 'center' }) }, 'Engines')
+                        )
+                      ),
+                      React.createElement('tbody', null,
+                        trs.map(function(r, i) {
+                          return React.createElement('tr', { key: i },
+                            React.createElement('td', { style: tdStyle }, r[0]),
+                            React.createElement('td', { style: tdRight }, r[1])
+                          );
+                        })
+                      )
+                    ),
+                    React.createElement('div', { style: { fontSize: 11, color: '#999', marginTop: 8, lineHeight: '1.5' } },
+                      React.createElement('strong', { style: { color: '#bbb' } }, 'AMD: '),
+                      'RX 7900 XTX/XT have 2 encode engines. All other RDNA 3 (7800/7700/7600) and older have 1. ',
+                      'AMD detection is not currently supported \u2014 set this value manually for AMD GPUs.'
+                    ),
+                    React.createElement('div', { style: { fontSize: 10, color: '#666', marginTop: 6 } },
+                      'Set to -1 to auto-detect (NVIDIA only). Each engine can run one encode simultaneously.'
+                    )
+                  );
+                }
+
+                return React.createElement(React.Fragment, { key: field.key },
+                  React.createElement('div', { style: rowStyle, title: field.desc },
+                    React.createElement('span', { style: labelStyle },
+                      field.label,
+                      isChanged
+                        ? React.createElement('span', { style: { color: '#ffa657', fontSize: 10, marginLeft: 4 } }, '\u2022')
+                        : React.createElement('span', { style: defaultHintStyle }, '(default: ' + (Array.isArray(field.default) ? field.default.map(function(v) { var c = (field.chips || []).find(function(ch) { return ch.value === v; }); return c ? c.label : v; }).join(', ') : String(field.default)) + ')')
+                    ),
+                    control,
+                    infoBtn,
+                    React.createElement('button', {
+                      style: Object.assign({}, resetBtnStyle, isChanged ? {} : { opacity: 0.3, cursor: 'default' }),
+                      onClick: isChanged ? function() { resetSetting(field.key); } : undefined,
+                      disabled: !isChanged,
+                      title: 'Reset to default (' + (Array.isArray(field.default) ? field.default.join(', ') : field.default) + ')'
+                    }, 'Reset')
                   ),
-                  control,
-                  React.createElement('button', {
-                    style: Object.assign({}, resetBtnStyle, isChanged ? {} : { opacity: 0.3, cursor: 'default' }),
-                    onClick: isChanged ? function() { resetSetting(field.key); } : undefined,
-                    disabled: !isChanged,
-                    title: 'Reset to default (' + (Array.isArray(field.default) ? field.default.join(', ') : field.default) + ')'
-                  }, 'Reset')
+                  infoPanel
                 );
               })
         )
