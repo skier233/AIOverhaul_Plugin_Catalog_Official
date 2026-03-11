@@ -540,6 +540,13 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
         for family_key in skip_codecs:
             aliases = CODEC_FAMILIES.get(family_key, frozenset())
             if codec in aliases:
+                # Already target codec — remove failure tag if present (prior run may have failed,
+                # but a subsequent encode succeeded and changed the codec)
+                if fail_tag and fail_tag.lower() in scene_tags:
+                    try:
+                        await stash_helpers.untag_scene(scene_id, fail_tag)
+                    except Exception as exc:
+                        _log.warning("Failed to remove tag %r from scene %s: %s", fail_tag, scene_id, exc)
                 # Even though we skip re-encoding, still chain AI tagging if enabled
                 tag_task_id = None
                 needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
@@ -587,7 +594,13 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
     result = await _poll_encode_job(worker_url, job_id, task_record, cancel_cb)
 
     if result.get("skipped"):
-        # Worker skipped (e.g. low bitrate) — still chain AI tagging if enabled
+        # Worker skipped (e.g. low bitrate) — remove failure tag if present
+        if fail_tag and fail_tag.lower() in scene_tags:
+            try:
+                await stash_helpers.untag_scene(scene_id, fail_tag)
+            except Exception as exc:
+                _log.warning("Failed to remove tag %r from scene %s: %s", fail_tag, scene_id, exc)
+        # Still chain AI tagging if enabled
         tag_task_id = None
         needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
         if needs_tagging:
