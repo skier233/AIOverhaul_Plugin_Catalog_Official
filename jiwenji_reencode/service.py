@@ -16,6 +16,7 @@ from stash_ai_server.utils.stash_api import stash_api
 from stash_ai_server.utils.path_mutation import mutate_path_for_plugin
 
 from . import stash_helpers
+from . import CODEC_FAMILIES
 
 _log = logging.getLogger(__name__)
 
@@ -59,6 +60,22 @@ def _coerce_float(value: object, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+_DEFAULT_SKIP_CODECS = ["hevc", "av1", "vp9"]
+
+
+def _coerce_skip_codecs(adv: dict) -> list[str]:
+    """Read skip_codecs from advanced blob with backwards compat from skip_hevc."""
+    raw = adv.get("skip_codecs")
+    if isinstance(raw, list):
+        return [c for c in raw if isinstance(c, str)]
+    # Backwards compat: fall back to old skip_hevc boolean
+    if "skip_hevc" in adv:
+        if _coerce_bool(adv["skip_hevc"], True):
+            return ["hevc", "av1", "vp9"]
+        return []
+    return list(_DEFAULT_SKIP_CODECS)
 
 
 def _get_selected_items(ctx: ContextInput) -> list[str]:
@@ -180,16 +197,19 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
     # 2. Apply path mapping (Stash Windows path → worker container path)
     worker_path = mutate_path_for_plugin(stash_path, service.plugin_name)
 
-    # 3. Skip HEVC check using Stash-reported codec (avoids extra ffprobe)
-    if settings.get("skip_hevc", True):
-        codec = file_info.get("video_codec", "")
-        if codec in ("hevc", "h265", "h.265"):
-            return {
-                "scene_id": scene_id,
-                "status": "skipped",
-                "message": f"Scene #{scene_id}: already HEVC, skipped.",
-                "skipped": True,
-            }
+    # 3. Skip codec check using Stash-reported codec (avoids extra ffprobe)
+    skip_codecs = settings.get("skip_codecs") or []
+    codec = (file_info.get("video_codec") or "").lower()
+    if codec and skip_codecs:
+        for family_key in skip_codecs:
+            aliases = CODEC_FAMILIES.get(family_key, frozenset())
+            if codec in aliases:
+                return {
+                    "scene_id": scene_id,
+                    "status": "skipped",
+                    "message": f"Scene #{scene_id}: already {family_key.upper()}, skipped.",
+                    "skipped": True,
+                }
 
     # 3b. Skip scenes tagged with the failure tag (unless disabled)
     if _coerce_bool(settings.get("skip_failed_tag"), True) and fail_tag:
@@ -287,8 +307,8 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
     # 9. Tag after re-encode (if enabled)
     #    When tag_in_parallel is False, the controller defers tagging until all
     #    encodes finish, so we only chain here when parallel mode is ON.
-    needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), False)
-    tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), False)
+    needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
+    tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), True)
     if needs_tagging and tag_in_parallel:
         # Use parent's group_id so chained tag task is a child of the same controller,
         # bypassing the global concurrency limit (user opted in to parallel).
@@ -367,7 +387,7 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
     selected_items = _get_selected_items(ctx)
     params["service"] = service
     settings = service.get_encode_settings()
-    tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), False)
+    tag_in_parallel = _coerce_bool(settings.get("tag_in_parallel"), True)
 
     if not selected_items:
         return {
@@ -495,7 +515,7 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
 
     # Deferred tagging: submit AI tagging for all successful scenes (sequential mode)
     tag_count = 0
-    if not tag_in_parallel and _coerce_bool(settings.get("tag_after_reencode"), False):
+    if not tag_in_parallel and _coerce_bool(settings.get("tag_after_reencode"), True):
         children_final = [task_manager.get(cid) for cid in child_ids]
         scenes_to_tag = []
         for child in children_final:
@@ -629,7 +649,7 @@ class ReencodeService(ServiceBase):
             "cq": _coerce_int(adv.get("cq"), 28),
             "cq_low_bitrate": _coerce_int(adv.get("cq_low_bitrate"), 34),
             "preset": adv.get("preset") or "p7",
-            "skip_hevc": _coerce_bool(adv.get("skip_hevc"), True),
+            "skip_codecs": _coerce_skip_codecs(adv),
             "output_suffix": adv.get("output_suffix") or "",
             "min_savings_pct": _coerce_float(adv.get("min_savings_pct"), 15.0),
             "gpu_index": _coerce_int(adv.get("gpu_index"), 0),
@@ -639,8 +659,8 @@ class ReencodeService(ServiceBase):
             "skip_failed_tag": _coerce_bool(adv.get("skip_failed_tag"), True),
             "skip_incompatible_container": _coerce_bool(adv.get("skip_incompatible_container"), False),
             "copy_metadata_on_suffix": _coerce_bool(adv.get("copy_metadata_on_suffix"), True),
-            "tag_after_reencode": _coerce_bool(adv.get("tag_after_reencode"), False),
-            "tag_in_parallel": _coerce_bool(adv.get("tag_in_parallel"), False),
+            "tag_after_reencode": _coerce_bool(cfg.get("tag_after_reencode") if cfg.get("tag_after_reencode") is not None else adv.get("tag_after_reencode"), True),
+            "tag_in_parallel": _coerce_bool(adv.get("tag_in_parallel"), True),
         }
 
     # ------------------------------------------------------------------
@@ -697,7 +717,7 @@ class ReencodeService(ServiceBase):
 # the old per-key storage approach and should be cleaned up.
 _VALID_SETTING_KEYS = frozenset({
     "delete_after_convert",
-    "tag_on_failure", "reencode_failed_tag", "reencode_advanced",
+    "tag_on_failure", "reencode_failed_tag", "tag_after_reencode", "reencode_advanced",
 })
 
 
@@ -716,7 +736,7 @@ def _cleanup_orphan_settings():
         from sqlalchemy import select as sa_select
 
         # The desired key order matches plugin.yml
-        _DESIRED_ORDER = ["tag_on_failure", "reencode_failed_tag", "delete_after_convert", "reencode_advanced"]
+        _DESIRED_ORDER = ["tag_on_failure", "reencode_failed_tag", "delete_after_convert", "tag_after_reencode", "reencode_advanced"]
 
         Session = get_session_local()
         db = Session()
@@ -752,6 +772,7 @@ def _cleanup_orphan_settings():
                     "tag_on_failure": {"type": "boolean", "label": "Tag on Failure", "default": True, "desc": "Add a tag to scenes that fail re-encoding"},
                     "reencode_failed_tag": {"type": "string", "label": "Failure Tag Name", "default": "reencode_failed", "desc": "Name of the tag to apply when re-encoding fails"},
                     "delete_after_convert": {"type": "boolean", "label": "Delete Original After Successful Convert", "default": True, "desc": "Delete the original file after a successful re-encode"},
+                    "tag_after_reencode": {"type": "boolean", "label": "Tag After Re-encode", "default": True, "desc": "Chain into AI tagging after successful re-encode"},
                     "reencode_advanced": {"type": "reencode_settings", "label": "Advanced Settings", "default": None, "desc": "Configure quality, concurrency, retry, GPU, and post-encode options"},
                 }
                 for key in _DESIRED_ORDER:
@@ -790,6 +811,7 @@ def _fix_setting_types():
         "tag_on_failure": "boolean",
         "reencode_failed_tag": "string",
         "delete_after_convert": "boolean",
+        "tag_after_reencode": "boolean",
         "reencode_advanced": "reencode_settings",
     }
     try:

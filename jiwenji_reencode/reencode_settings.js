@@ -34,7 +34,14 @@
           { value: 'p7', label: 'p7 (best compression)' }
         ]
       },
-      { key: 'skip_hevc', label: 'Skip HEVC Files', type: 'boolean', default: true, desc: 'Skip files already in H.265/HEVC' },
+      { key: 'skip_codecs', label: 'Skip Codecs', type: 'codec_chips', default: ['hevc', 'av1', 'vp9'], desc: 'Skip files already encoded in these codecs',
+        chips: [
+          { value: 'hevc', label: 'H.265' },
+          { value: 'av1',  label: 'AV1' },
+          { value: 'vp9',  label: 'VP9' },
+          { value: 'vp8',  label: 'VP8' }
+        ]
+      },
       { key: 'skip_failed_tag', label: 'Skip Previously Failed', type: 'boolean', default: true, desc: 'Skip scenes tagged with the failure tag. Disable to retry failed files (e.g. after changing CQ settings)' },
       { key: 'skip_incompatible_container', label: 'Skip Incompatible Containers', type: 'boolean', default: false, desc: 'Skip files in containers that cannot hold HEVC (WMV, AVI, FLV, 3GP, MPEG) instead of remuxing to MP4' },
       { key: 'output_suffix', label: 'Output Filename Suffix', type: 'string', default: '', desc: 'e.g. "_hevc". Empty = replace in-place' },
@@ -44,8 +51,7 @@
       { key: 'aggressive_cq', label: 'Aggressive Retry CQ', type: 'number', default: 34, desc: 'CQ for first retry attempt' },
       { key: 'ultra_aggressive_cq', label: 'Ultra-Aggressive CQ Ceiling', type: 'number', default: 40, desc: 'Max CQ for ultra-aggressive retry chain' },
       { key: 'copy_metadata_on_suffix', label: 'Copy Metadata on Suffix', type: 'boolean', default: true, desc: 'Copy tags/performers/etc. to new scene when using suffix' },
-      { key: 'tag_after_reencode', label: 'Tag After Re-encode', type: 'boolean', default: false, desc: 'Chain into AI tagging after successful encode' },
-      { key: 'tag_in_parallel', label: 'Run AI Tagging in Parallel', type: 'boolean', default: false, desc: 'OFF (default): wait for any running AI tagging jobs before encoding, and defer chained tagging until all encodes finish. ON: run encoding and tagging simultaneously (requires more resources, may cause instability)' }
+      { key: 'tag_in_parallel', label: 'Run AI Tagging in Parallel - Requires Skier AI Tagging Plugin', type: 'boolean', default: true, desc: 'OFF: wait for any running AI tagging jobs before encoding, and defer chained tagging until all encodes finish. ON (default): run encoding and tagging simultaneously (requires more resources, may cause instability)' }
     ];
 
     var PLUGIN_NAME = 'jiwenji_reencode';
@@ -121,11 +127,21 @@
         });
       }
 
+      function arraysEqual(a, b) {
+        if (!Array.isArray(a) || !Array.isArray(b)) return false;
+        var sa = a.slice().sort(), sb = b.slice().sort();
+        if (sa.length !== sb.length) return false;
+        for (var i = 0; i < sa.length; i++) { if (sa[i] !== sb[i]) return false; }
+        return true;
+      }
+
       function saveSetting(key, val) {
         setValues(function(prev) {
           var next = Object.assign({}, prev);
+          var def = DEFAULTS[key];
           // If value equals default, remove it from blob to keep it clean
-          if (val === DEFAULTS[key]) {
+          var isDefault = Array.isArray(def) ? arraysEqual(val, def) : val === def;
+          if (isDefault) {
             delete next[key];
           } else {
             next[key] = val;
@@ -192,6 +208,31 @@
                     },
                     style: Object.assign({}, inputStyle, { width: 80 })
                   });
+                } else if (field.type === 'codec_chips') {
+                  var chipArr = Array.isArray(val) ? val : (field.default || []);
+                  control = React.createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+                    (field.chips || []).map(function(chip) {
+                      var active = chipArr.indexOf(chip.value) !== -1;
+                      return React.createElement('span', {
+                        key: chip.value,
+                        onClick: function() {
+                          var updated = chipArr.slice();
+                          var idx = updated.indexOf(chip.value);
+                          if (idx !== -1) updated.splice(idx, 1);
+                          else updated.push(chip.value);
+                          saveSetting(field.key, updated);
+                        },
+                        style: {
+                          display: 'inline-block', padding: '4px 12px', borderRadius: 12,
+                          fontSize: 12, fontWeight: 'bold', cursor: 'pointer', userSelect: 'none',
+                          background: active ? '#1a6b3a' : '#2a2a2a',
+                          color: active ? '#7cfc7c' : '#777',
+                          border: '1px solid ' + (active ? '#2d8a4e' : '#444'),
+                          transition: 'background 0.15s, color 0.15s'
+                        }
+                      }, chip.label);
+                    })
+                  );
                 } else if (field.type === 'select') {
                   control = React.createElement('select', {
                     value: val || field.default,
@@ -214,14 +255,14 @@
                     field.label,
                     isChanged
                       ? React.createElement('span', { style: { color: '#ffa657', fontSize: 10, marginLeft: 4 } }, '\u2022')
-                      : React.createElement('span', { style: defaultHintStyle }, '(default: ' + String(field.default) + ')')
+                      : React.createElement('span', { style: defaultHintStyle }, '(default: ' + (Array.isArray(field.default) ? field.default.map(function(v) { var c = (field.chips || []).find(function(ch) { return ch.value === v; }); return c ? c.label : v; }).join(', ') : String(field.default)) + ')')
                   ),
                   control,
                   React.createElement('button', {
                     style: Object.assign({}, resetBtnStyle, isChanged ? {} : { opacity: 0.3, cursor: 'default' }),
                     onClick: isChanged ? function() { resetSetting(field.key); } : undefined,
                     disabled: !isChanged,
-                    title: 'Reset to default (' + field.default + ')'
+                    title: 'Reset to default (' + (Array.isArray(field.default) ? field.default.join(', ') : field.default) + ')'
                   }, 'Reset')
                 );
               })

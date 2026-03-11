@@ -24,6 +24,12 @@ settings:
     default: true
     description: "Delete the original file after a successful re-encode"
 
+  - key: tag_after_reencode
+    label: Tag After Re-encode
+    type: boolean
+    default: true
+    description: "Chain into AI tagging after successful re-encode"
+
   # ── Advanced settings (collapsible custom renderer) ──
   - key: reencode_advanced
     label: Advanced Settings

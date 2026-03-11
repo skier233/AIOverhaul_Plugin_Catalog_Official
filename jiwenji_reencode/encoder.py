@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from jiwenji_reencode import CODEC_FAMILIES
+
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -440,13 +442,17 @@ async def reencode_file(
     except Exception as exc:
         return EncodeResult(success=False, error=f"ffprobe failed: {exc}")
 
-    # Skip if already HEVC
-    if settings.get("skip_hevc", True) and info.is_hevc:
-        return EncodeResult(
-            success=True, skipped=True,
-            skip_reason="Already HEVC",
-            original_size=original_size,
-        )
+    # Skip if codec matches any selected skip family
+    skip_codecs = settings.get("skip_codecs") or []
+    if skip_codecs:
+        codec_lower = info.codec.lower()
+        for family_key in skip_codecs:
+            if codec_lower in CODEC_FAMILIES.get(family_key, frozenset()):
+                return EncodeResult(
+                    success=True, skipped=True,
+                    skip_reason=f"Already {family_key.upper()}",
+                    original_size=original_size,
+                )
 
     # Determine low bitrate
     is_low_bitrate = looks_too_low_bitrate(info.width, info.height, info.bitrate)
