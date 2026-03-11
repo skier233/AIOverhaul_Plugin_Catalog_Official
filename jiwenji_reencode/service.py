@@ -864,6 +864,7 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
         failed_count = 0
         skipped_count = 0
         success_count = 0
+        retry_success_count = 0
         total_savings_bytes = 0
         total_original_bytes = 0
 
@@ -886,6 +887,10 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
                         if orig and new:
                             total_original_bytes += orig
                             total_savings_bytes += orig - new
+                        # Track scenes that needed aggressive retries
+                        method = child_result.get("method_used") or ""
+                        if "aggressive" in method or "ultra" in method:
+                            retry_success_count += 1
                 else:
                     failed_count += 1
             elif child.status == TaskStatus.running:
@@ -910,6 +915,7 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
             "failed": failed_count,
             "skipped": skipped_count,
             "success": success_count,
+            "retry_success": retry_success_count,
             "status_line": status_line,
             "savings_mb": round(total_savings_bytes / (1024 * 1024), 1),
             "workers": workers_detail,

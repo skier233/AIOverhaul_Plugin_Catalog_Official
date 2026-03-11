@@ -36,6 +36,7 @@
       var failed = p.failed || 0;
       var skipped = p.skipped || 0;
       var success = p.success || 0;
+      var retrySuccess = p.retry_success || 0;
       var running = p.running || 0;
       var savingsMb = p.savings_mb || 0;
       var workers = p.workers || [];
@@ -69,13 +70,18 @@
 
       // Counters row — encode phase
       var counters = [];
+      var cleanSuccess = success - retrySuccess;
       if (running > 0)
         counters.push(
           h("span", { key: "run", className: "ai-tv__counter ai-tv__counter--running" }, running + " encoding")
         );
-      if (success > 0)
+      if (cleanSuccess > 0)
         counters.push(
-          h("span", { key: "ok", className: "ai-tv__counter ai-tv__counter--success" }, success + " encoded")
+          h("span", { key: "ok", className: "ai-tv__counter ai-tv__counter--success" }, cleanSuccess + " encoded")
+        );
+      if (retrySuccess > 0)
+        counters.push(
+          h("span", { key: "retry", className: "ai-tv__counter ai-tv__counter--retry" }, retrySuccess + " needed retry")
         );
       if (failed > 0)
         counters.push(

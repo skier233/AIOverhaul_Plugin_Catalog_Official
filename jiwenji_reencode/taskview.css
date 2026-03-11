@@ -126,6 +126,10 @@
   background: rgba(239, 68, 68, 0.15);
   color: #f87171;
 }
+.ai-tv__counter--retry {
+  background: rgba(251, 146, 60, 0.15);
+  color: #fb923c;
+}
 .ai-tv__counter--skipped {
   background: rgba(234, 179, 8, 0.15);
   color: #facc15;
