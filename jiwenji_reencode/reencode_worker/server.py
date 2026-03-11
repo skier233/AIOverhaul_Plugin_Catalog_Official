@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import signal
+import time
 import uuid
 from pathlib import Path
 from aiohttp import web
@@ -123,11 +124,18 @@ async def handle_encode(request: web.Request) -> web.Response:
         }, status=404)
 
     job_id = str(uuid.uuid4())
-    job = {"progress": 0.0, "result": None, "cancelled": False}
+    job = {
+        "progress": 0.0, "result": None, "cancelled": False,
+        "last_progress_value": 0.0, "last_progress_time": time.monotonic(),
+    }
     _jobs[job_id] = job
 
     def progress_cb(pct: float):
-        job["progress"] = round(pct, 1)
+        rounded = round(pct, 3)
+        if rounded != job["progress"]:
+            job["last_progress_value"] = rounded
+            job["last_progress_time"] = time.monotonic()
+        job["progress"] = rounded
 
     def cancel_cb() -> bool:
         return job["cancelled"]
@@ -183,12 +191,73 @@ async def handle_cancel(request: web.Request) -> web.Response:
     return web.json_response({"job_id": job_id, "cancelled": True})
 
 
+_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v", ".mpg", ".mpeg", ".3gp"}
+
+STALE_PROGRESS_TIMEOUT = 300  # 5 min with zero progress movement
+
+
+async def _reap_stale_jobs():
+    """Background task: cancel jobs whose progress hasn't advanced."""
+    while True:
+        await asyncio.sleep(60)
+        now = time.monotonic()
+        for job_id in list(_jobs.keys()):
+            job = _jobs.get(job_id)
+            if not job or job["result"] is not None:
+                continue
+            last_change = job.get("last_progress_time", now)
+            if now - last_change > STALE_PROGRESS_TIMEOUT:
+                _log.warning(
+                    "Reaping stale job %s — progress stuck at %.3f%% for %ds",
+                    job_id, job["progress"], int(now - last_change),
+                )
+                job["cancelled"] = True
+                task = job.get("task")
+                if task and not task.done():
+                    task.cancel()
+                _jobs.pop(job_id, None)
+
+
+async def _cleanup_orphaned_parts():
+    """On boot, remove .part files left by a previous crash/restart."""
+    stash_mount = Path("/app/stash")
+    if not stash_mount.is_dir():
+        return
+    now = time.time()
+    max_age = 4 * 86400   # 4 days
+    min_age = 60           # skip very recent files
+    count = 0
+    for part_file in stash_mount.rglob("*.part"):
+        # Check it matches our temp naming: somefile.mp4.part
+        base = part_file.stem  # e.g. "somefile.mp4" from "somefile.mp4.part"
+        base_ext = Path(base).suffix.lower()
+        if base_ext not in _VIDEO_EXTENSIONS:
+            continue
+        try:
+            mtime = part_file.stat().st_mtime
+        except OSError:
+            continue
+        age = now - mtime
+        if age > max_age or age < min_age:
+            continue
+        _log.info("Removing orphaned temp file: %s (age: %.0fh)", part_file, age / 3600)
+        try:
+            part_file.unlink()
+            count += 1
+        except OSError as exc:
+            _log.warning("Failed to remove %s: %s", part_file, exc)
+    if count:
+        _log.info("Cleaned up %d orphaned .part file(s)", count)
+
+
 async def on_startup(app: web.Application):
     """Initialize the encode semaphore based on detected GPU engine count."""
     global _encode_semaphore
     gpu_name, engine_count = await encoder.detect_gpu_info(0)
     _encode_semaphore = asyncio.Semaphore(engine_count)
     _log.info("Initialized encode semaphore: %d slots (GPU: %s)", engine_count, gpu_name)
+    await _cleanup_orphaned_parts()
+    asyncio.create_task(_reap_stale_jobs())
 
 
 def create_app() -> web.Application:

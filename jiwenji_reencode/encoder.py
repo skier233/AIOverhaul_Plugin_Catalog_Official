@@ -383,24 +383,42 @@ async def _read_progress(
 ) -> bool:
     """Read ffmpeg -progress pipe:1 output and report percent.
     Returns True if completed, False if cancelled."""
+    STALL_TIMEOUT = 120  # seconds with no ffmpeg output at all
+
     if proc.stdout is None:
         return True
+
+    # Accumulate fields between progress= lines
+    cur_fps: float = 0.0
+    cur_speed: str = ""
 
     while True:
         if cancel_check and cancel_check():
             proc.kill()
             return False
 
-        line = await proc.stdout.readline()
+        try:
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=STALL_TIMEOUT)
+        except asyncio.TimeoutError:
+            _log.warning("ffmpeg stalled — no output for %ds, killing process", STALL_TIMEOUT)
+            proc.kill()
+            return False
         if not line:
             break
         decoded = line.decode("utf-8", errors="replace").strip()
-        if decoded.startswith("out_time_us="):
+        if decoded.startswith("fps="):
+            try:
+                cur_fps = float(decoded.split("=", 1)[1])
+            except (ValueError, IndexError):
+                pass
+        elif decoded.startswith("speed="):
+            cur_speed = decoded.split("=", 1)[1].strip()
+        elif decoded.startswith("out_time_us="):
             try:
                 time_us = int(decoded.split("=", 1)[1])
                 if total_duration > 0 and progress_callback:
                     pct = min(time_us / (total_duration * 1_000_000) * 100, 100.0)
-                    progress_callback(pct)
+                    progress_callback({"percent": pct, "fps": cur_fps, "speed": cur_speed})
             except (ValueError, ZeroDivisionError):
                 pass
         elif decoded.startswith("progress=end"):
@@ -477,11 +495,12 @@ async def reencode_file(
 
     gpu_idx = settings.get("gpu_index", 0)
 
-    # Temp output path — use .mp4 extension when container format changed
+    # Temp output path — distinctive suffix so cleanup never touches other apps' files
+    _TEMP_SUFFIX = ".tmp"
     if format_changed:
-        temp_path = input_path.with_suffix(".mp4.part")
+        temp_path = input_path.with_suffix(".mp4" + _TEMP_SUFFIX)
     else:
-        temp_path = input_path.with_name(input_path.name + ".part")
+        temp_path = input_path.with_name(input_path.name + _TEMP_SUFFIX)
 
     # Try with hardware-accelerated decoding first, then fall back to
     # software decoding.  CUVID doesn't support every input codec (e.g.

@@ -9,7 +9,7 @@ from urllib.parse import quote
 from stash_ai_server.services.registry import ServiceBase, services
 from stash_ai_server.actions.registry import action
 from stash_ai_server.actions.models import ContextRule, ContextInput
-from stash_ai_server.tasks.models import TaskRecord, TaskPriority, TaskStatus
+from stash_ai_server.tasks.models import TaskRecord, TaskPriority, TaskStatus, TaskSpec
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.manager import manager as task_manager
 from stash_ai_server.utils.stash_api import stash_api
@@ -120,17 +120,186 @@ async def _worker_health(worker_url: str) -> dict | None:
         return None
 
 
-async def _submit_encode_job(worker_url: str, file_path: str, settings: dict) -> str | None:
+async def _submit_encode_job(worker_url: str, file_path: str, settings: dict, stash_path: str = "") -> str | None:
     """Submit an encode job to the worker. Returns job_id or None on error."""
     try:
         resp = await _worker_request(worker_url, "POST", "/encode", {
             "file_path": file_path,
             "settings": settings,
+            "stash_path": stash_path,
         })
         return resp.get("job_id")
     except Exception as exc:
         _log.error("Failed to submit encode job: %s", exc)
         return None
+
+
+async def _recover_worker_jobs(service) -> None:
+    """Reconnect to in-flight and uncollected worker jobs after a backend restart.
+
+    Creates a real controller task so the dashboard shows live progress.
+    For already-completed jobs, triggers Stash rescans immediately.
+    """
+    worker_url = service.worker_url
+    try:
+        resp = await _worker_request(worker_url, "GET", "/jobs")
+    except Exception as exc:
+        _log.debug("Recovery: worker unreachable: %s", exc)
+        return
+
+    jobs = resp.get("jobs", [])
+    running_jobs = [j for j in jobs if not j.get("done") and not j.get("collected")]
+    completed_jobs = [j for j in jobs if j.get("done") and not j.get("collected")]
+
+    if not running_jobs and not completed_jobs:
+        return
+
+    _log.info("Recovery: found %d running, %d completed uncollected job(s)",
+              len(running_jobs), len(completed_jobs))
+
+    # Handle completed-uncollected jobs: trigger rescans
+    for job in completed_jobs:
+        result = job.get("result", {})
+        stash_path = job.get("stash_path", "")
+        job_id = job.get("job_id", "?")
+        if stash_path and result.get("success"):
+            rescan_path = result.get("output_path") or stash_path
+            _log.info("Recovery: rescan for completed job %s → %s", job_id, rescan_path)
+            try:
+                await stash_helpers.trigger_rescan(rescan_path)
+            except Exception as exc:
+                _log.warning("Recovery: rescan failed for %s: %s", rescan_path, exc)
+        # Mark collected
+        try:
+            await _worker_request(worker_url, "GET", f"/status/{job_id}")
+        except Exception:
+            pass
+
+    # Handle running jobs: create a controller task that polls them
+    if not running_jobs:
+        return
+
+    # Submit a recovery controller task
+    spec = TaskSpec(id="jiwenji.reencode.recovery", service="jiwenji_reencode")
+    ctx = ContextInput(page="scenes", entity_id=None, is_detail_view=False, selected_ids=[])
+
+    async def _recovery_controller(ctx, params, task_record):
+        return await _poll_recovered_jobs(worker_url, running_jobs, task_record, service)
+
+    task = task_manager.submit(spec, _recovery_controller, ctx, {}, TaskPriority.high)
+    _log.info("Recovery: created controller task %s for %d running job(s)", task.id, len(running_jobs))
+
+
+async def _poll_recovered_jobs(worker_url: str, jobs: list, task_record: TaskRecord, service) -> dict:
+    """Poll recovered running jobs until all finish, emitting dashboard-compatible progress."""
+    # Restore batch state from worker (total scenes, prior completed/failed/skipped/savings)
+    batch_state = {}
+    try:
+        batch_state = await _worker_request(worker_url, "GET", "/batch")
+    except Exception:
+        pass
+
+    job_ids = [j["job_id"] for j in jobs]
+    stash_paths = {j["job_id"]: j.get("stash_path", "") for j in jobs}
+    done_set: set[str] = set()
+
+    # Use batch state as baseline — these include counts from before the crash
+    batch_total = batch_state.get("total", len(jobs))
+    base_success = batch_state.get("success", 0)
+    base_failed = batch_state.get("failed", 0)
+    base_skipped = batch_state.get("skipped", 0)
+    base_completed = batch_state.get("completed", 0)
+    base_savings_mb = batch_state.get("savings_mb", 0.0)
+
+    # Track new completions from recovered jobs only
+    new_success = 0
+    new_failed = 0
+    new_skipped = 0
+    new_savings_bytes = 0
+
+    num_recovered_jobs = len(job_ids)
+
+    while len(done_set) < num_recovered_jobs:
+        if getattr(task_record, "cancel_requested", False):
+            for jid in job_ids:
+                if jid not in done_set:
+                    try:
+                        await _worker_request(worker_url, "POST", f"/cancel/{jid}")
+                    except Exception:
+                        pass
+            break
+
+        workers_detail = []
+        for jid in job_ids:
+            if jid in done_set:
+                continue
+            try:
+                resp = await _worker_request(worker_url, "GET", f"/status/{jid}")
+            except Exception:
+                continue
+
+            if resp.get("done"):
+                done_set.add(jid)
+                result = resp.get("result", {})
+                stash_path = stash_paths.get(jid, "")
+                if result.get("success"):
+                    new_success += 1
+                    orig = result.get("original_size", 0)
+                    new = result.get("new_size", 0)
+                    if orig and new:
+                        new_savings_bytes += orig - new
+                    if stash_path:
+                        rescan_path = result.get("output_path") or stash_path
+                        try:
+                            await stash_helpers.trigger_rescan(rescan_path)
+                        except Exception as exc:
+                            _log.warning("Recovery: rescan failed for %s: %s", rescan_path, exc)
+                elif result.get("skipped"):
+                    new_skipped += 1
+                else:
+                    new_failed += 1
+            else:
+                workers_detail.append({
+                    "percent": resp.get("progress", 0.0),
+                    "fps": resp.get("fps", 0.0),
+                    "speed": resp.get("speed", ""),
+                    "filename": resp.get("filename", ""),
+                })
+
+        # Combine baseline (pre-crash) + new completions from recovered jobs
+        total_completed = base_completed + len(done_set)
+        total_success = base_success + new_success
+        total_failed = base_failed + new_failed
+        total_skipped = base_skipped + new_skipped
+        total_savings_mb = base_savings_mb + round(new_savings_bytes / (1024 * 1024), 1)
+
+        task_manager.emit_progress(task_record, {
+            "completed": total_completed,
+            "total": batch_total,
+            "running": num_recovered_jobs - len(done_set),
+            "failed": total_failed,
+            "skipped": total_skipped,
+            "success": total_success,
+            "status_line": f"{total_completed}/{batch_total} (recovered)",
+            "savings_mb": total_savings_mb,
+            "workers": workers_detail,
+        })
+
+        if len(done_set) < num_recovered_jobs:
+            await asyncio.sleep(2.0)
+
+    final_success = base_success + new_success
+    final_failed = base_failed + new_failed
+    final_skipped = base_skipped + new_skipped
+    final_savings = base_savings_mb + round(new_savings_bytes / (1024 * 1024), 1)
+    return {
+        "status": "recovered",
+        "message": f"Recovery complete: {final_success} succeeded, {final_failed} failed, {final_skipped} skipped. Savings: {final_savings} MB",
+        "scenes_completed": final_success,
+        "scenes_failed": final_failed,
+        "scenes_skipped": final_skipped,
+        "total_savings_mb": final_savings,
+    }
 
 
 async def _poll_encode_job(
@@ -141,6 +310,9 @@ async def _poll_encode_job(
     poll_interval: float = 2.0,
 ) -> dict:
     """Poll worker for job status until done or cancelled."""
+    MAX_POLL_FAILURES = 30
+    poll_failures = 0
+
     while True:
         if cancel_check():
             # Cancel on worker side too
@@ -152,14 +324,36 @@ async def _poll_encode_job(
 
         try:
             resp = await _worker_request(worker_url, "GET", f"/status/{job_id}")
+            poll_failures = 0  # reset on success
         except Exception as exc:
-            _log.warning("Failed to poll job %s: %s", job_id, exc)
+            poll_failures += 1
+            if poll_failures >= MAX_POLL_FAILURES:
+                _log.error(
+                    "Worker unreachable for %d consecutive polls, aborting job %s",
+                    poll_failures, job_id,
+                )
+                return {"success": False, "error": "Worker unreachable"}
+            _log.warning(
+                "Failed to poll job %s (%d/%d): %s",
+                job_id, poll_failures, MAX_POLL_FAILURES, exc,
+            )
             await asyncio.sleep(poll_interval)
             continue
 
+        # Worker restarted and lost this job — it returns {"error": "Unknown job_id"}
+        if resp.get("error") and not resp.get("done"):
+            _log.error("Worker lost job %s: %s", job_id, resp["error"])
+            return {"success": False, "error": f"Worker lost job: {resp['error']}"}
+
         progress = resp.get("progress", 0)
         pct = round(progress, 1)
-        task_manager.emit_progress(task_record, {"percent": pct, "status_line": f"{pct:.1f}%"})
+        task_manager.emit_progress(task_record, {
+            "percent": pct,
+            "fps": resp.get("fps", 0.0),
+            "speed": resp.get("speed", ""),
+            "filename": resp.get("filename", ""),
+            "status_line": f"{pct:.1f}%",
+        })
 
         if resp.get("done"):
             return resp.get("result", {"success": False, "error": "No result returned"})
@@ -233,7 +427,7 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
             }
 
     # 4. Submit encode job to worker sidecar
-    job_id = await _submit_encode_job(worker_url, worker_path, settings)
+    job_id = await _submit_encode_job(worker_url, worker_path, settings, stash_path=stash_path)
     if not job_id:
         return {
             "scene_id": scene_id,
@@ -461,6 +655,7 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
 
         done = 0
         running_workers = []
+        workers_detail = []
         failed_count = 0
         skipped_count = 0
         success_count = 0
@@ -489,8 +684,9 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
                 else:
                     failed_count += 1
             elif child.status == TaskStatus.running:
-                pct = _get_child_progress(child)
-                running_workers.append(f"w{len(running_workers) + 1}:{pct:.1f}%")
+                wp = _get_child_progress_dict(child)
+                running_workers.append(f"w{len(running_workers) + 1}:{wp['percent']:.1f}%")
+                workers_detail.append(wp)
 
         # Build status line: "done: 3/10|w1:45.0%|w2:12.0%|failed:1"
         parts = [f"done: {done}/{total}"]
@@ -502,7 +698,7 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
             parts.append(f"skipped: {skipped_count}")
         status_line = "|".join(parts)
 
-        task_manager.emit_progress(task_record, {
+        progress_payload = {
             "completed": done,
             "total": total,
             "running": len(running_workers),
@@ -511,7 +707,15 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
             "success": success_count,
             "status_line": status_line,
             "savings_mb": round(total_savings_bytes / (1024 * 1024), 1),
-        })
+            "workers": workers_detail,
+        }
+        task_manager.emit_progress(task_record, progress_payload)
+
+        # Persist batch state on worker for crash recovery
+        try:
+            await _worker_request(service.worker_url, "PUT", "/batch", progress_payload)
+        except Exception:
+            pass
 
         pending = [c for c in children if c.status not in (TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled)]
         if not pending:
@@ -530,6 +734,12 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
 
     savings_mb = round(total_savings_bytes / (1024 * 1024), 1)
     savings_pct = round((total_savings_bytes / total_original_bytes) * 100, 1) if total_original_bytes > 0 else 0.0
+
+    # Clear batch state on worker now that we're done
+    try:
+        await _worker_request(service.worker_url, "PUT", "/batch", {})
+    except Exception:
+        pass
 
     status = "success"
     if failed_count:
@@ -579,12 +789,23 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
 
 def _get_child_progress(child) -> float:
     """Extract the last emitted encode progress percent from a child task."""
-    # The progress payload is stored on the task by the manager's _emit
-    # Look for our custom percent field
     progress = getattr(child, "last_progress", None)
     if isinstance(progress, dict):
         return progress.get("percent", 0.0)
     return 0.0
+
+
+def _get_child_progress_dict(child) -> dict:
+    """Extract rich progress data from a child task."""
+    progress = getattr(child, "last_progress", None)
+    if isinstance(progress, dict):
+        return {
+            "percent": progress.get("percent", 0.0),
+            "fps": progress.get("fps", 0.0),
+            "speed": progress.get("speed", ""),
+            "filename": progress.get("filename", ""),
+        }
+    return {"percent": 0.0, "fps": 0.0, "speed": "", "filename": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +821,19 @@ class ReencodeService(ServiceBase):
         self._settings_cache: dict = {}
         self.worker_url: str = _DEFAULT_WORKER_URL
         self.reload_settings()
+        # Recover uncollected jobs from a previous backend crash (fire-and-forget)
+        try:
+            asyncio.get_event_loop().create_task(self._startup_recovery())
+        except RuntimeError:
+            pass  # no event loop yet — recovery will happen on first batch
+
+    async def _startup_recovery(self) -> None:
+        """One-shot recovery: reconnect to any in-flight or uncollected worker jobs."""
+        await asyncio.sleep(5)  # give the worker a moment to be reachable
+        try:
+            await _recover_worker_jobs(self)
+        except Exception as exc:
+            _log.debug("Startup recovery skipped: %s", exc)
 
     def reload_settings(self) -> None:
         cfg = self._load_settings()
