@@ -662,7 +662,7 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
 
     # 8. Trigger Stash rescan (unless deferred until after tagging)
     needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
-    rescan_after_tagging = _coerce_bool(settings.get("rescan_after_tagging"), False)
+    rescan_after_tagging = _coerce_bool(settings.get("rescan_after_tagging"), True)
     force_immediate = params.get("_force_immediate_rescan", False)
     defer_rescan = rescan_after_tagging and needs_tagging and not force_immediate
 
@@ -981,7 +981,7 @@ async def reencode_scenes(service: ReencodeService, ctx: ContextInput, params: d
     # ── Phase 2: Collect tag task IDs & handle deferred tagging ──
     tag_task_ids = []
     # Map tag_task_id → rescan_path for deferred rescans (rescan_after_tagging mode)
-    rescan_after_tagging = _coerce_bool(settings.get("rescan_after_tagging"), False)
+    rescan_after_tagging = _coerce_bool(settings.get("rescan_after_tagging"), True)
     deferred_rescan_map: dict[str, str] = {}
 
     if tag_in_parallel:
@@ -1254,7 +1254,7 @@ class ReencodeService(ServiceBase):
             "copy_metadata_on_suffix": _coerce_bool(adv.get("copy_metadata_on_suffix"), True),
             "tag_after_reencode": _coerce_bool(cfg.get("tag_after_reencode") if cfg.get("tag_after_reencode") is not None else adv.get("tag_after_reencode"), True),
             "tag_in_parallel": _coerce_bool(adv.get("tag_in_parallel"), True),
-            "rescan_after_tagging": _coerce_bool(adv.get("rescan_after_tagging"), False),
+            "rescan_after_tagging": _coerce_bool(adv.get("rescan_after_tagging"), True),
         }
 
     # ------------------------------------------------------------------
