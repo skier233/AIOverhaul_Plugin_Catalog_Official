@@ -268,7 +268,8 @@
                   }, '?');
                 }
 
-                var infoPanel = null;
+                // GPU engines modal (rendered via portal at document.body level)
+                var infoModal = null;
                 if (field.info === 'gpu_engines' && infoPopup === field.key) {
                   var trs = [
                     ['RTX 5090', '3'], ['RTX 5080 / 5070 Ti', '2'], ['RTX 5070 / 5060 Ti / 5060', '1'],
@@ -280,40 +281,61 @@
                     ['RTX 6000 Ada / RTX A4000', '2\u20133'],
                     ['RTX A6000 / A5000 / Quadro RTX', '1'],
                   ];
-                  var tableStyle = { fontSize: 11, borderCollapse: 'collapse', width: '100%' };
-                  var thStyle = { textAlign: 'left', padding: '3px 8px', borderBottom: '1px solid #444', color: '#999' };
-                  var tdStyle = { padding: '3px 8px', borderBottom: '1px solid #2a2a2a', color: '#bbb' };
+                  var tableStyle = { fontSize: 12, borderCollapse: 'collapse', width: '100%' };
+                  var thStyle = { textAlign: 'left', padding: '6px 12px', borderBottom: '1px solid #444', color: '#999' };
+                  var tdStyle = { padding: '5px 12px', borderBottom: '1px solid #2a2a2a', color: '#bbb' };
                   var tdRight = Object.assign({}, tdStyle, { textAlign: 'center', fontWeight: 'bold', color: '#7cfc7c' });
-                  infoPanel = React.createElement('div', {
-                    style: {
-                      margin: '4px 12px 8px', padding: 10, background: '#1a1a1a',
-                      border: '1px solid #333', borderRadius: 4
-                    }
+                  var modalBackdrop = {
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0,0,0,0.7)', zIndex: 10000,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center'
+                  };
+                  var modalBox = {
+                    background: '#1a1a1a', border: '1px solid #444', borderRadius: 8,
+                    padding: '20px 24px', maxWidth: 520, width: '90%', maxHeight: '80vh',
+                    overflowY: 'auto', position: 'relative'
+                  };
+                  var closeBtnStyle = {
+                    position: 'absolute', top: 10, right: 14, fontSize: 18, color: '#888',
+                    cursor: 'pointer', background: 'none', border: 'none', lineHeight: 1
+                  };
+                  infoModal = React.createElement('div', {
+                    style: modalBackdrop,
+                    onClick: function(e) { if (e.target === e.currentTarget) setInfoPopup(null); }
                   },
-                    React.createElement('div', { style: { fontSize: 12, fontWeight: 'bold', color: '#ccc', marginBottom: 6 } }, 'NVIDIA NVENC Encoder Engines'),
-                    React.createElement('table', { style: tableStyle },
-                      React.createElement('thead', null,
-                        React.createElement('tr', null,
-                          React.createElement('th', { style: thStyle }, 'GPU'),
-                          React.createElement('th', { style: Object.assign({}, thStyle, { textAlign: 'center' }) }, 'Engines')
+                    React.createElement('div', { style: modalBox },
+                      React.createElement('button', { style: closeBtnStyle, onClick: function() { setInfoPopup(null); } }, '\u00D7'),
+                      React.createElement('div', { style: { fontSize: 15, fontWeight: 'bold', color: '#eee', marginBottom: 12 } }, 'GPU Encoder Engines Reference'),
+                      React.createElement('div', { style: { fontSize: 12, color: '#999', marginBottom: 12, lineHeight: '1.5' } },
+                        'Each encoder engine can run one simultaneous encode. Set this value to match your GPU, or use -1 to auto-detect (NVIDIA only).'
+                      ),
+                      React.createElement('div', { style: { fontSize: 13, fontWeight: 'bold', color: '#7cfc7c', marginBottom: 6 } }, 'NVIDIA'),
+                      React.createElement('table', { style: tableStyle },
+                        React.createElement('thead', null,
+                          React.createElement('tr', null,
+                            React.createElement('th', { style: thStyle }, 'GPU Model'),
+                            React.createElement('th', { style: Object.assign({}, thStyle, { textAlign: 'center' }) }, 'Engines')
+                          )
+                        ),
+                        React.createElement('tbody', null,
+                          trs.map(function(r, i) {
+                            return React.createElement('tr', { key: i },
+                              React.createElement('td', { style: tdStyle }, r[0]),
+                              React.createElement('td', { style: tdRight }, r[1])
+                            );
+                          })
                         )
                       ),
-                      React.createElement('tbody', null,
-                        trs.map(function(r, i) {
-                          return React.createElement('tr', { key: i },
-                            React.createElement('td', { style: tdStyle }, r[0]),
-                            React.createElement('td', { style: tdRight }, r[1])
-                          );
-                        })
+                      React.createElement('div', { style: { fontSize: 13, fontWeight: 'bold', color: '#ff6b6b', marginTop: 16, marginBottom: 6 } }, 'AMD (Manual Setup Required)'),
+                      React.createElement('div', { style: { fontSize: 12, color: '#bbb', lineHeight: '1.6' } },
+                        'AMD GPUs are not auto-detected. If you have an AMD card, set this value manually:',
+                        React.createElement('ul', { style: { margin: '6px 0', paddingLeft: 20 } },
+                          React.createElement('li', null, React.createElement('strong', null, 'RX 7900 XTX / 7900 XT'), ' \u2014 2 engines'),
+                          React.createElement('li', null, React.createElement('strong', null, 'All other RDNA 3'), ' (7800 XT, 7700 XT, 7600) \u2014 1 engine'),
+                          React.createElement('li', null, React.createElement('strong', null, 'RDNA 2 and older'), ' \u2014 1 engine')
+                        ),
+                        'The worker will still function with AMD GPUs, but you must set the concurrent encode count yourself.'
                       )
-                    ),
-                    React.createElement('div', { style: { fontSize: 11, color: '#999', marginTop: 8, lineHeight: '1.5' } },
-                      React.createElement('strong', { style: { color: '#bbb' } }, 'AMD: '),
-                      'RX 7900 XTX/XT have 2 encode engines. All other RDNA 3 (7800/7700/7600) and older have 1. ',
-                      'AMD detection is not currently supported \u2014 set this value manually for AMD GPUs.'
-                    ),
-                    React.createElement('div', { style: { fontSize: 10, color: '#666', marginTop: 6 } },
-                      'Set to -1 to auto-detect (NVIDIA only). Each engine can run one encode simultaneously.'
                     )
                   );
                 }
@@ -335,7 +357,7 @@
                       title: 'Reset to default (' + (Array.isArray(field.default) ? field.default.join(', ') : field.default) + ')'
                     }, 'Reset')
                   ),
-                  infoPanel
+                  infoModal
                 );
               })
         )
