@@ -19,7 +19,7 @@ settings:
     default: "reencode_failed"
     description: "Name of the tag to apply when re-encoding fails"
   - key: delete_after_convert
-    label: Delete Original After Successful Convert
+    label: Delete Original After Successful Re-encode
     type: boolean
     default: true
     description: "Delete the original file after a successful re-encode"
