@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import urllib.request
 
 from stash_ai_server.utils.stash_api import stash_api
 
@@ -41,9 +43,10 @@ async def get_full_scene_metadata(scene_id: int) -> dict | None:
         if not stash_api.stash_interface:
             return None
         fragment = (
-            "id tags { id } performers { id } studio { id } "
-            "galleries { id } movies { movie { id } scene_index } "
-            "rating100 details url"
+            "id title code date director tags { id } performers { id } "
+            "studio { id } galleries { id } groups { group { id } scene_index } "
+            "rating100 details urls organized o_counter "
+            "paths { screenshot }"
         )
         return stash_api.stash_interface.find_scene(id=scene_id, fragment=fragment)
 
@@ -74,15 +77,35 @@ async def copy_scene_metadata(source_scene_id: int, target_scene_id: int) -> Non
         return
 
     def _update():
-        payload = {"ids": [target_scene_id]}
+        # Use singular sceneUpdate (not bulk) for full field support
+        payload: dict = {"id": target_scene_id}
 
+        # Scalar fields
+        for field in ("title", "code", "date", "director", "details"):
+            if meta.get(field):
+                payload[field] = meta[field]
+        if meta.get("rating100") is not None:
+            payload["rating100"] = meta["rating100"]
+        if meta.get("o_counter") is not None:
+            payload["o_counter"] = meta["o_counter"]
+        if meta.get("organized") is not None:
+            payload["organized"] = meta["organized"]
+
+        # URLs (Stash v0.25+ uses plural `urls`)
+        urls = meta.get("urls")
+        if urls:
+            payload["urls"] = urls
+        elif meta.get("url"):
+            payload["urls"] = [meta["url"]]
+
+        # Relationship IDs (singular mutation uses plain lists, not mode objects)
         tag_ids = [t["id"] for t in meta.get("tags", []) if "id" in t]
         if tag_ids:
-            payload["tag_ids"] = {"ids": tag_ids, "mode": "ADD"}
+            payload["tag_ids"] = tag_ids
 
         performer_ids = [p["id"] for p in meta.get("performers", []) if "id" in p]
         if performer_ids:
-            payload["performer_ids"] = {"ids": performer_ids, "mode": "ADD"}
+            payload["performer_ids"] = performer_ids
 
         studio = meta.get("studio")
         if studio and "id" in studio:
@@ -90,21 +113,65 @@ async def copy_scene_metadata(source_scene_id: int, target_scene_id: int) -> Non
 
         gallery_ids = [g["id"] for g in meta.get("galleries", []) if "id" in g]
         if gallery_ids:
-            payload["gallery_ids"] = {"ids": gallery_ids, "mode": "ADD"}
+            payload["gallery_ids"] = gallery_ids
 
-        if meta.get("rating100") is not None:
-            payload["rating100"] = meta["rating100"]
+        # Groups (formerly movies in Stash <v0.27)
+        groups = meta.get("groups") or meta.get("movies") or []
+        group_entries = []
+        for g in groups:
+            grp = g.get("group") or g.get("movie") or {}
+            if "id" in grp:
+                group_entries.append({"group_id": grp["id"], "scene_index": g.get("scene_index")})
+        if group_entries:
+            payload["groups"] = group_entries
 
-        if meta.get("details"):
-            payload["details"] = meta["details"]
-
-        if meta.get("url"):
-            payload["url"] = meta["url"]
-
-        stash_api.stash_interface.update_scenes(payload)
+        stash_api.stash_interface.call_GQL(
+            """mutation SceneUpdate($input: SceneUpdateInput!) {
+                sceneUpdate(input: $input) { id }
+            }""",
+            variables={"input": payload},
+        )
 
     await asyncio.to_thread(_update)
+
+    # Copy cover image separately — requires downloading the screenshot
+    # and re-uploading as a base64 data URI via sceneUpdate.
+    screenshot_url = (meta.get("paths") or {}).get("screenshot")
+    if screenshot_url:
+        await _copy_cover_image(target_scene_id, screenshot_url)
+
     _log.info("Copied metadata from scene %s to scene %s", source_scene_id, target_scene_id)
+
+
+async def _copy_cover_image(target_scene_id: int, screenshot_url: str) -> None:
+    """Download the cover image from a URL and set it on the target scene."""
+    def _do():
+        if not stash_api.stash_interface:
+            return
+        try:
+            # Build request with API key if configured
+            req = urllib.request.Request(screenshot_url)
+            api_key = getattr(stash_api.stash_interface, "api_key", None)
+            if api_key:
+                req.add_header("ApiKey", api_key)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                img_data = resp.read()
+                content_type = resp.headers.get("Content-Type", "image/jpeg")
+        except Exception as exc:
+            _log.warning("Failed to download cover image from %s: %s", screenshot_url, exc)
+            return
+
+        b64 = base64.b64encode(img_data).decode("ascii")
+        data_uri = f"data:{content_type};base64,{b64}"
+
+        stash_api.stash_interface.call_GQL(
+            """mutation SceneUpdate($input: SceneUpdateInput!) {
+                sceneUpdate(input: $input) { id }
+            }""",
+            variables={"input": {"id": target_scene_id, "cover_image": data_uri}},
+        )
+
+    await asyncio.to_thread(_do)
 
 
 async def tag_scene(scene_id: int, tag_name: str) -> None:
