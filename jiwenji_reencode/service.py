@@ -683,23 +683,43 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
             _log.warning("Failed to remove tag %r from scene %s: %s", fail_tag, scene_id, exc)
 
     # 8. Trigger Stash rescan (unless deferred until after tagging)
+    #    Container-change encodes (e.g. .wmv → .mp4) ALWAYS need immediate
+    #    rescan: the old scene points to a deleted file and must be cleaned up,
+    #    and the new file needs to be picked up by Stash.
     needs_tagging = _coerce_bool(settings.get("tag_after_reencode"), True)
     rescan_after_tagging = _coerce_bool(settings.get("rescan_after_tagging"), True)
     force_immediate = params.get("_force_immediate_rescan", False)
-    defer_rescan = rescan_after_tagging and needs_tagging and not force_immediate
+    container_changed = output_stash_path != stash_path and worker_output_path
+    defer_rescan = rescan_after_tagging and needs_tagging and not force_immediate and not container_changed
 
     if not defer_rescan:
+        # When the container changed, rescan the OLD path first so Stash
+        # removes the now-deleted original, then rescan the new path.
+        if container_changed:
+            _log.info("Container changed: rescanning old path %s then new path %s", stash_path, output_stash_path)
+            await stash_helpers.trigger_rescan(stash_path)
+            # Give Stash a moment to process the deletion before scanning new file
+            await asyncio.sleep(2)
         await stash_helpers.trigger_rescan(output_stash_path)
 
-    # 9. Suffix mode: copy metadata to new scene (requires rescan to have run)
+    # 9. Copy metadata to new scene when the output path changed
+    #    (container change OR suffix mode).  Requires rescan to have run.
     tag_queued = False
     target_scene_id = scene_id
+    path_changed = output_stash_path != stash_path
 
-    if not defer_rescan and suffix and output_stash_path != stash_path and _coerce_bool(settings.get("copy_metadata_on_suffix"), True):
+    if not defer_rescan and path_changed and _coerce_bool(settings.get("copy_metadata_on_suffix"), True):
         new_scene_id = await _poll_for_new_scene(output_stash_path, timeout=30)
         if new_scene_id:
             await stash_helpers.copy_scene_metadata(scene_id, new_scene_id)
             target_scene_id = new_scene_id
+            # If the old scene still exists (container change, original deleted),
+            # destroy it so Stash doesn't keep a broken entry.
+            if container_changed:
+                old_scene_still_exists = await stash_helpers.find_scene_by_path(stash_path)
+                if old_scene_still_exists:
+                    _log.info("Destroying old scene %s (file was replaced by %s)", old_scene_still_exists, output_stash_path)
+                    await stash_helpers.destroy_scene(old_scene_still_exists)
         else:
             _log.warning("New scene not found for %s after rescan; metadata copy skipped", output_stash_path)
 

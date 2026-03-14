@@ -148,6 +148,22 @@ async def untag_scene(scene_id: int, tag_name: str) -> None:
     _log.info("Removed tag %r from scene %s", tag_name, scene_id)
 
 
+async def destroy_scene(scene_id: int) -> None:
+    """Delete a scene entry from Stash (does NOT delete the file on disk)."""
+    def _do():
+        if not stash_api.stash_interface:
+            return
+        stash_api.stash_interface.call_GQL(
+            """mutation ScenesDestroy($input: ScenesDestroyInput!) {
+                scenesDestroy(input: $input)
+            }""",
+            variables={"input": {"ids": [scene_id], "delete_file": False, "delete_generated": True}},
+        )
+
+    await asyncio.to_thread(_do)
+    _log.info("Destroyed scene %s from Stash", scene_id)
+
+
 async def trigger_rescan(file_path: str) -> None:
     """Trigger a Stash metadata scan for a specific file path."""
     def _scan():
