@@ -96,6 +96,7 @@ async def _worker_request(worker_url: str, method: str, path: str, json_body: di
     """Make an HTTP request to the reencode worker sidecar using stdlib."""
     import json as _json
     import urllib.request
+    import urllib.error
 
     url = f"{worker_url.rstrip('/')}{path}"
 
@@ -106,8 +107,21 @@ async def _worker_request(worker_url: str, method: str, path: str, json_body: di
             req.add_header("Content-Type", "application/json")
         else:
             req = urllib.request.Request(url, method=method)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return _json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return _json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            # Read the response body for a more informative error message
+            body = ""
+            try:
+                raw = exc.read()
+                body_json = _json.loads(raw)
+                body = body_json.get("error", raw.decode("utf-8", errors="replace"))
+            except Exception:
+                body = raw.decode("utf-8", errors="replace") if raw else ""
+            raise RuntimeError(
+                f"Worker {method} {path} returned HTTP {exc.code}: {body}"
+            ) from exc
 
     return await asyncio.to_thread(_do_request)
 
@@ -130,7 +144,7 @@ async def _submit_encode_job(worker_url: str, file_path: str, settings: dict, st
         })
         return resp.get("job_id")
     except Exception as exc:
-        _log.error("Failed to submit encode job: %s", exc)
+        _log.error("Failed to submit encode job for %s: %s", stash_path or file_path, exc)
         return None
 
 
@@ -578,12 +592,20 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
     # 4. Submit encode job to worker sidecar
     job_id = await _submit_encode_job(worker_url, worker_path, settings, stash_path=stash_path)
     if not job_id:
+        # Tag the scene as failed
+        tag_on_failure = _coerce_bool(settings.get("tag_on_failure"), True)
+        fail_tag = settings.get("reencode_failed_tag", "reencode_failed")
+        if tag_on_failure and fail_tag:
+            try:
+                await stash_helpers.tag_scene(scene_id, fail_tag)
+            except Exception as exc:
+                _log.warning("Failed to tag scene %s with %r: %s", scene_id, fail_tag, exc)
         return {
             "scene_id": scene_id,
             "status": "failed",
             "message": (
-                f"Scene #{scene_id}: failed to submit encode job to worker at {worker_url}. "
-                f"Is the reencode_worker container running?"
+                f"Scene #{scene_id}: failed to submit encode job "
+                f"(file may not exist on worker: {stash_path or worker_path})"
             ),
         }
 

@@ -362,7 +362,7 @@ def build_encode_cmd(
     else:
         cmd += ["-c:a", "copy"]
     cmd += [
-        "-map", "0:v",
+        "-map", "0:V",       # capital V excludes attached-pic streams (cover art, thumbnails)
         "-map", "0:a?",
         "-f", fmt,
         "-progress", "pipe:1",
@@ -512,6 +512,7 @@ async def reencode_file(
             input_path, temp_path, methods, fmt, gpu_idx, hwaccel,
             info.duration, original_size, settings,
             progress_callback, cancel_check, new_ext=new_ext,
+            force_audio_transcode=format_changed,
         )
         if result is not None:
             return result
@@ -528,6 +529,19 @@ async def reencode_file(
     )
 
 
+def _looks_like_audio_compat_error(stderr_text: str) -> bool:
+    """Check if ffmpeg stderr suggests an audio codec/container incompatibility."""
+    lower = stderr_text.lower()
+    return any(phrase in lower for phrase in (
+        "no packets",
+        "could not find tag for codec",
+        "not currently supported in container",
+        "unsupported codec",
+        "codec not currently supported",
+        "tag not found",
+    ))
+
+
 async def _try_methods(
     input_path: Path,
     temp_path: Path,
@@ -541,6 +555,7 @@ async def _try_methods(
     progress_callback: Callable | None,
     cancel_check: Callable | None,
     new_ext: str | None = None,
+    force_audio_transcode: bool = False,
 ) -> EncodeResult | None:
     """Try all encode methods with the given hwaccel mode.
 
@@ -555,10 +570,11 @@ async def _try_methods(
             _cleanup_temp(temp_path)
             return EncodeResult(success=False, error="Cancelled")
 
-        # Try with audio copy first; if it fails instantly, retry with
-        # audio transcode (AAC) in case the audio codec is incompatible
-        # with the output container.
-        for audio_transcode in (False, True):
+        # When the container format changed (e.g. WMV→MP4), the original
+        # audio codec (e.g. WMA) almost certainly can't be copied into the
+        # new container — skip straight to AAC transcoding.
+        audio_options = (True,) if force_audio_transcode else (False, True)
+        for audio_transcode in audio_options:
             cmd = build_encode_cmd(input_path, temp_path, method, fmt, gpu_idx, hwaccel=hwaccel, transcode_audio=audio_transcode)
             audio_label = " +aac" if audio_transcode else ""
             _log.info("Trying method %s (%s%s): %s", method.name, decode_label, audio_label, " ".join(cmd))
@@ -590,7 +606,7 @@ async def _try_methods(
             _log.warning("Method %s failed: ffmpeg exited %d: %s", method.name, returncode, stderr_text[-300:])
             _cleanup_temp(temp_path)
 
-            if not audio_transcode and "no packets" in stderr_text.lower():
+            if not audio_transcode and _looks_like_audio_compat_error(stderr_text):
                 # Likely audio codec incompatibility — retry with AAC
                 _log.info("Retrying %s with audio transcode (AAC)", method.name)
                 continue
