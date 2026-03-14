@@ -94,6 +94,19 @@ FORMAT_MAP: dict[str, str] = {
     ".3gp": "3gp",
 }
 
+# Codecs where CUDA/CUVID hardware decoding is known to silently produce
+# corrupt output (green frames) on modern GPUs instead of failing cleanly.
+# For these, skip straight to software decoding.
+_HWACCEL_BROKEN_CODECS: frozenset[str] = frozenset({
+    "vc1",
+    "wmv3",
+    "wmv2",
+    "wmv1",
+    "msmpeg4v3",
+    "msmpeg4v2",
+    "msmpeg4v1",
+})
+
 # Containers that cannot hold HEVC — output will be forced to MP4
 _HEVC_INCOMPATIBLE_FORMATS: frozenset[str] = frozenset({
     "asf",   # WMV/ASF
@@ -505,9 +518,14 @@ async def reencode_file(
     # Try with hardware-accelerated decoding first, then fall back to
     # software decoding.  CUVID doesn't support every input codec (e.g.
     # WMV3, some MPEG-4 ASP variants), so the fallback is essential.
+    # For codecs known to produce silent corruption with CUDA, skip
+    # straight to software decode.
     new_ext = ".mp4" if format_changed else None
+    skip_hwaccel = info.codec in _HWACCEL_BROKEN_CODECS
+    if skip_hwaccel:
+        _log.info("Codec %r is in HWACCEL_BROKEN_CODECS — skipping CUDA decode", info.codec)
 
-    for hwaccel in (True, False):
+    for hwaccel in (False,) if skip_hwaccel else (True, False):
         result = await _try_methods(
             input_path, temp_path, methods, fmt, gpu_idx, hwaccel,
             info.duration, original_size, settings,
@@ -626,6 +644,33 @@ async def _try_methods(
         # Check output file exists and is valid
         if not temp_path.exists() or temp_path.stat().st_size == 0:
             _log.warning("Method %s: output file missing or empty", method.name)
+            _cleanup_temp(temp_path)
+            continue
+
+        # Validate the output is a real, playable video — CUVID can
+        # silently produce corrupt green-frame output for unsupported
+        # codecs while still exiting 0.
+        try:
+            out_info = await get_video_info(temp_path)
+            if out_info.width == 0 or out_info.height == 0:
+                _log.warning("Method %s: output has 0×0 dimensions — corrupt", method.name)
+                _cleanup_temp(temp_path)
+                continue
+            if not out_info.is_hevc:
+                _log.warning("Method %s: output codec is %r, expected HEVC — corrupt", method.name, out_info.codec)
+                _cleanup_temp(temp_path)
+                continue
+            if out_info.duration > 0 and duration > 0:
+                ratio = out_info.duration / duration
+                if ratio < 0.5:
+                    _log.warning(
+                        "Method %s: output duration %.1fs is much shorter than input %.1fs — likely corrupt",
+                        method.name, out_info.duration, duration,
+                    )
+                    _cleanup_temp(temp_path)
+                    continue
+        except Exception as exc:
+            _log.warning("Method %s: output validation failed (ffprobe error: %s) — treating as corrupt", method.name, exc)
             _cleanup_temp(temp_path)
             continue
 
