@@ -445,6 +445,100 @@ async def _read_progress(
 
 
 # ---------------------------------------------------------------------------
+# Metadata-only remux (no re-encode)
+# ---------------------------------------------------------------------------
+async def _metadata_strip_remux(
+    input_path: Path,
+    info: VideoInfo,
+    original_size: int,
+    settings: dict,
+    progress_callback: Callable | None = None,
+    cancel_check: Callable | None = None,
+) -> EncodeResult:
+    """Remux a file with -map_metadata -1, copying all streams without re-encoding."""
+    # Check if the file actually has metadata worth stripping
+    try:
+        probe = await ffprobe_json(input_path)
+        tags = probe.get("format", {}).get("tags", {})
+        # Ignore harmless structural tags that ffmpeg always writes
+        _IGNORE_TAGS = {"major_brand", "minor_version", "compatible_brands", "encoder"}
+        meaningful = {k: v for k, v in tags.items() if k.lower() not in _IGNORE_TAGS}
+        if not meaningful:
+            _log.info("No meaningful metadata to strip from %s, skipping remux", input_path.name)
+            return EncodeResult(
+                success=True, skipped=True,
+                skip_reason="Already target codec, no metadata to strip",
+                original_size=original_size,
+            )
+        _log.info("Metadata to strip: %s", list(meaningful.keys()))
+    except Exception:
+        pass  # If probe fails, proceed with remux anyway
+
+    ext = input_path.suffix.lower()
+    fmt = FORMAT_MAP.get(ext, "mp4")
+
+    _TEMP_SUFFIX = ".tmp"
+    temp_path = input_path.with_name(input_path.name + _TEMP_SUFFIX)
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(input_path),
+        "-c", "copy",
+        "-map_metadata", "-1",
+        "-map", "0:V",
+        "-map", "0:a?",
+        "-f", fmt,
+        "-progress", "pipe:1",
+        "-nostats",
+        str(temp_path),
+    ]
+    _log.info("Metadata-strip remux: %s", " ".join(cmd))
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        completed = await _read_progress(proc, info.duration, progress_callback, cancel_check)
+        if not completed:
+            _cleanup_temp(temp_path)
+            return EncodeResult(success=False, error="Cancelled")
+
+        _, stderr_data = await proc.communicate()
+        if proc.returncode != 0:
+            stderr_text = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
+            _log.warning("Metadata-strip remux failed: %s", stderr_text[-300:])
+            _cleanup_temp(temp_path)
+            return EncodeResult(success=False, original_size=original_size, error=f"Metadata remux failed (ffmpeg exit {proc.returncode})")
+    except Exception as exc:
+        _cleanup_temp(temp_path)
+        return EncodeResult(success=False, original_size=original_size, error=f"Metadata remux exception: {exc}")
+
+    if not temp_path.exists() or temp_path.stat().st_size == 0:
+        _cleanup_temp(temp_path)
+        return EncodeResult(success=False, original_size=original_size, error="Metadata remux produced empty output")
+
+    new_size = temp_path.stat().st_size
+
+    try:
+        output_path = _resolve_output_path(input_path, settings)
+        _finalize_output(input_path, temp_path, output_path, settings)
+    except Exception as exc:
+        _cleanup_temp(temp_path)
+        return EncodeResult(success=False, error=f"File finalization failed: {exc}")
+
+    savings_pct = ((original_size - new_size) / original_size) * 100 if original_size > 0 else 0.0
+    return EncodeResult(
+        success=True,
+        original_size=original_size,
+        new_size=new_size,
+        savings_pct=round(savings_pct, 1),
+        method_used="metadata_strip_remux",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main encode function
 # ---------------------------------------------------------------------------
 async def reencode_file(
@@ -478,11 +572,21 @@ async def reencode_file(
         return EncodeResult(success=False, error=f"ffprobe failed: {exc}")
 
     # Skip if codec matches any selected skip family
+    # (unless strip_metadata is enabled — then do a metadata-only remux)
+    strip_metadata = settings.get("strip_metadata", False)
     skip_codecs = settings.get("skip_codecs") or []
     if skip_codecs:
         codec_lower = info.codec.lower()
         for family_key in skip_codecs:
             if codec_lower in CODEC_FAMILIES.get(family_key, frozenset()):
+                if strip_metadata:
+                    # Already target codec but metadata strip requested —
+                    # do a fast copy-remux instead of full re-encode
+                    _log.info("Already %s but strip_metadata enabled — doing metadata-only remux", family_key.upper())
+                    return await _metadata_strip_remux(
+                        input_path, info, original_size, settings,
+                        progress_callback, cancel_check,
+                    )
                 return EncodeResult(
                     success=True, skipped=True,
                     skip_reason=f"Already {family_key.upper()}",
