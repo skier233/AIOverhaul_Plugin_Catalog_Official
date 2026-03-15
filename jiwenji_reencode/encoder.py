@@ -357,6 +357,7 @@ def build_encode_cmd(
     gpu_idx: int = 0,
     hwaccel: bool = True,
     transcode_audio: bool = False,
+    strip_metadata: bool = False,
 ) -> list[str]:
     """Build the ffmpeg command-line argument list."""
     cmd = ["ffmpeg", "-y"]
@@ -374,6 +375,9 @@ def build_encode_cmd(
         cmd += ["-c:a", "aac", "-b:a", "192k"]
     else:
         cmd += ["-c:a", "copy"]
+    # Strip all container/stream metadata (title, website, encoder, etc.)
+    if strip_metadata:
+        cmd += ["-map_metadata", "-1"]
     cmd += [
         "-map", "0:V",       # capital V excludes attached-pic streams (cover art, thumbnails)
         "-map", "0:a?",
@@ -593,7 +597,7 @@ async def _try_methods(
         # new container — skip straight to AAC transcoding.
         audio_options = (True,) if force_audio_transcode else (False, True)
         for audio_transcode in audio_options:
-            cmd = build_encode_cmd(input_path, temp_path, method, fmt, gpu_idx, hwaccel=hwaccel, transcode_audio=audio_transcode)
+            cmd = build_encode_cmd(input_path, temp_path, method, fmt, gpu_idx, hwaccel=hwaccel, transcode_audio=audio_transcode, strip_metadata=settings.get("strip_metadata", False))
             audio_label = " +aac" if audio_transcode else ""
             _log.info("Trying method %s (%s%s): %s", method.name, decode_label, audio_label, " ".join(cmd))
 
