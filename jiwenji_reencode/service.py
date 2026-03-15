@@ -668,18 +668,21 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
         }
 
     if not result.get("success"):
-        # Tag the scene as failed if configured
-        tag_on_failure = _coerce_bool(settings.get("tag_on_failure"), True)
-        fail_tag = settings.get("reencode_failed_tag", "reencode_failed")
-        if tag_on_failure and fail_tag:
-            try:
-                await stash_helpers.tag_scene(scene_id, fail_tag)
-            except Exception as exc:
-                _log.warning("Failed to tag scene %s with %r: %s", scene_id, fail_tag, exc)
+        error_msg = result.get("error", "unknown")
+        is_cancel = "cancel" in error_msg.lower()
+        # Only tag as failed for real failures, not cancellations
+        if not is_cancel:
+            tag_on_failure = _coerce_bool(settings.get("tag_on_failure"), True)
+            fail_tag = settings.get("reencode_failed_tag", "reencode_failed")
+            if tag_on_failure and fail_tag:
+                try:
+                    await stash_helpers.tag_scene(scene_id, fail_tag)
+                except Exception as exc:
+                    _log.warning("Failed to tag scene %s with %r: %s", scene_id, fail_tag, exc)
         return {
             "scene_id": scene_id,
-            "status": "failed",
-            "message": f"Scene #{scene_id}: encode failed — {result.get('error', 'unknown')}.",
+            "status": "cancelled" if is_cancel else "failed",
+            "message": f"Scene #{scene_id}: {'cancelled' if is_cancel else 'encode failed — ' + error_msg}.",
         }
 
     # 6. Determine output Stash path for rescan
