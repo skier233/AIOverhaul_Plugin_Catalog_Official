@@ -89,6 +89,16 @@
       "requiredBackend": ">=0.0.0",
       "path": "performer_tag_hybrid",
       "manifest": "performer_tag_hybrid/plugin.yml"
+    },
+    {
+      "name": "jiwenji_reencode",
+      "humanName": "Re-encode to H.265",
+      "version": "0.1.0",
+      "description": "GPU-accelerated H.265 (HEVC) re-encoding of scene files using NVENC",
+      "dependsOn": [],
+      "requiredBackend": ">=0.5.0",
+      "path": "jiwenji_reencode",
+      "manifest": "jiwenji_reencode/plugin.yml"
     }
   ]
 }
