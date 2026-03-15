@@ -589,6 +589,33 @@ async def reencode_scene_task(ctx: ContextInput, params: dict, task_record: Task
                 "skipped": True,
             }
 
+    # 3c. If embed_stash_metadata is enabled, fetch scene metadata and inject
+    #     it into settings so the encoder can write it as container tags.
+    if settings.get("strip_metadata") and settings.get("embed_stash_metadata"):
+        meta = await stash_helpers.get_full_scene_metadata(scene_id)
+        if meta:
+            container_tags = {}
+            if meta.get("title"):
+                container_tags["title"] = meta["title"]
+            performers = meta.get("performers") or []
+            if performers:
+                # Fetch performer names
+                perf_names = await stash_helpers.get_performer_names([p["id"] for p in performers if "id" in p])
+                if perf_names:
+                    container_tags["artist"] = ", ".join(perf_names)
+            studio = meta.get("studio")
+            if studio and "id" in studio:
+                studio_name = await stash_helpers.get_studio_name(studio["id"])
+                if studio_name:
+                    container_tags["album_artist"] = studio_name
+            if meta.get("date"):
+                container_tags["date"] = meta["date"]
+            if meta.get("details"):
+                container_tags["description"] = meta["details"]
+            if container_tags:
+                settings = {**settings, "container_tags": container_tags}
+                _log.info("Embedding Stash metadata into container: %s", list(container_tags.keys()))
+
     # 4. Submit encode job to worker sidecar
     job_id = await _submit_encode_job(worker_url, worker_path, settings, stash_path=stash_path)
     if not job_id:
@@ -1297,6 +1324,8 @@ class ReencodeService(ServiceBase):
             "tag_after_reencode": _coerce_bool(cfg.get("tag_after_reencode") if cfg.get("tag_after_reencode") is not None else adv.get("tag_after_reencode"), True),
             "tag_in_parallel": _coerce_bool(adv.get("tag_in_parallel"), True),
             "rescan_after_tagging": _coerce_bool(adv.get("rescan_after_tagging"), True),
+            "strip_metadata": _coerce_bool(adv.get("strip_metadata"), False),
+            "embed_stash_metadata": _coerce_bool(adv.get("embed_stash_metadata"), False),
         }
 
     # ------------------------------------------------------------------

@@ -53,7 +53,8 @@
       { key: 'ultra_aggressive_cq', label: 'Ultra-Aggressive CQ Ceiling', type: 'number', default: 40, desc: 'Max CQ for ultra-aggressive retry chain' },
       { key: 'tag_in_parallel', label: 'Run AI Tagging in Parallel - Requires Skier AI Tagging Plugin', type: 'boolean', default: true, desc: 'OFF: runs an AI tagging job at the end, after all re-encoding has finished. ON (default): run encoding and tagging simultaneously (uses more resources)' },
       { key: 'rescan_after_tagging', label: 'Delay Rescan', type: 'boolean', default: true, desc: 'Delay Stash rescan until AI tagging completes. Required for generating marker preview images from tagger-created markers. When disabled, rescan happens immediately after encode.' },
-      { key: 'strip_metadata', label: 'Wipe Container Metadata', type: 'boolean', default: false, desc: 'Strip all container metadata (title, website, encoder, release date, etc.) from re-encoded files. Prevents junk text from appearing in media players.' }
+      { key: 'strip_metadata', label: 'Wipe Container Metadata', type: 'boolean', default: false, desc: 'Strip all container metadata (title, website, encoder, release date, etc.) from re-encoded files. Prevents junk text from appearing in media players. Also processes already-encoded files via fast remux.' },
+      { key: 'embed_stash_metadata', label: 'Embed Stash Metadata', type: 'boolean', default: false, desc: 'Write Stash scene metadata (title, performers, studio, date) into the container after stripping. Requires "Wipe Container Metadata" to be enabled.', parent: 'strip_metadata' }
     ];
 
     var PLUGIN_NAME = 'jiwenji_reencode';
@@ -196,13 +197,22 @@
                 // A field is "changed" if it exists in the blob (i.e. user explicitly set it)
                 var isChanged = blobVal !== undefined && blobVal !== null;
 
+                // Sub-option: disabled unless parent is enabled
+                var parentDisabled = false;
+                if (field.parent) {
+                  var parentBlobVal = values[field.parent];
+                  var parentVal = (parentBlobVal !== undefined && parentBlobVal !== null) ? parentBlobVal : DEFAULTS[field.parent];
+                  parentDisabled = !parentVal;
+                }
+
                 var control;
                 if (field.type === 'boolean') {
                   control = React.createElement('input', {
                     type: 'checkbox',
-                    checked: !!val,
+                    checked: !!val && !parentDisabled,
+                    disabled: parentDisabled,
                     onChange: function(e) { saveSetting(field.key, e.target.checked); },
-                    style: { cursor: 'pointer' }
+                    style: { cursor: parentDisabled ? 'not-allowed' : 'pointer' }
                   });
                 } else if (field.type === 'number') {
                   control = React.createElement('input', {
@@ -342,8 +352,14 @@
                   );
                 }
 
+                var fieldRowStyle = parentDisabled
+                  ? Object.assign({}, rowStyle, { opacity: 0.4, paddingLeft: 28 })
+                  : field.parent
+                    ? Object.assign({}, rowStyle, { paddingLeft: 28 })
+                    : rowStyle;
+
                 return React.createElement(React.Fragment, { key: field.key },
-                  React.createElement('div', { style: rowStyle, title: field.desc },
+                  React.createElement('div', { style: fieldRowStyle, title: field.desc },
                     React.createElement('span', { style: labelStyle },
                       field.label,
                       isChanged

@@ -69,6 +69,32 @@ async def find_scene_by_path(file_path: str) -> int | None:
     return await asyncio.to_thread(_query)
 
 
+async def get_performer_names(performer_ids: list[int]) -> list[str]:
+    """Fetch performer names by IDs."""
+    def _query():
+        if not stash_api.stash_interface or not performer_ids:
+            return []
+        names = []
+        for pid in performer_ids:
+            p = stash_api.stash_interface.find_performer(pid)
+            if p and p.get("name"):
+                names.append(p["name"])
+        return names
+
+    return await asyncio.to_thread(_query)
+
+
+async def get_studio_name(studio_id: int) -> str | None:
+    """Fetch a studio name by ID."""
+    def _query():
+        if not stash_api.stash_interface:
+            return None
+        s = stash_api.stash_interface.find_studio(studio_id)
+        return s.get("name") if s else None
+
+    return await asyncio.to_thread(_query)
+
+
 async def copy_scene_metadata(source_scene_id: int, target_scene_id: int) -> None:
     """Copy tags, performers, studio, galleries, rating, etc. from source to target."""
     meta = await get_full_scene_metadata(source_scene_id)

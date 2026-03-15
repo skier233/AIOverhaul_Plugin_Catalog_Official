@@ -358,6 +358,7 @@ def build_encode_cmd(
     hwaccel: bool = True,
     transcode_audio: bool = False,
     strip_metadata: bool = False,
+    container_tags: dict[str, str] | None = None,
 ) -> list[str]:
     """Build the ffmpeg command-line argument list."""
     cmd = ["ffmpeg", "-y"]
@@ -378,6 +379,10 @@ def build_encode_cmd(
     # Strip all container/stream metadata (title, website, encoder, etc.)
     if strip_metadata:
         cmd += ["-map_metadata", "-1"]
+    # Embed custom container tags (e.g. Stash metadata)
+    if container_tags:
+        for tag_key, tag_val in container_tags.items():
+            cmd += ["-metadata", f"{tag_key}={tag_val}"]
     cmd += [
         "-map", "0:V",       # capital V excludes attached-pic streams (cover art, thumbnails)
         "-map", "0:a?",
@@ -463,19 +468,22 @@ async def _metadata_strip_remux(
         # Ignore harmless structural tags that ffmpeg always writes
         _IGNORE_TAGS = {"major_brand", "minor_version", "compatible_brands", "encoder"}
         meaningful = {k: v for k, v in tags.items() if k.lower() not in _IGNORE_TAGS}
-        if not meaningful:
-            _log.info("No meaningful metadata to strip from %s, skipping remux", input_path.name)
+        container_tags = settings.get("container_tags")
+        if not meaningful and not container_tags:
+            _log.info("No meaningful metadata to strip from %s and no tags to embed, skipping remux", input_path.name)
             return EncodeResult(
                 success=True, skipped=True,
                 skip_reason="Already target codec, no metadata to strip",
                 original_size=original_size,
             )
-        _log.info("Metadata to strip: %s", list(meaningful.keys()))
+        if meaningful:
+            _log.info("Metadata to strip: %s", list(meaningful.keys()))
     except Exception:
         pass  # If probe fails, proceed with remux anyway
 
     ext = input_path.suffix.lower()
     fmt = FORMAT_MAP.get(ext, "mp4")
+    container_tags = settings.get("container_tags")
 
     _TEMP_SUFFIX = ".tmp"
     temp_path = input_path.with_name(input_path.name + _TEMP_SUFFIX)
@@ -485,6 +493,12 @@ async def _metadata_strip_remux(
         "-i", str(input_path),
         "-c", "copy",
         "-map_metadata", "-1",
+    ]
+    # Embed custom container tags (e.g. Stash metadata)
+    if container_tags:
+        for tag_key, tag_val in container_tags.items():
+            cmd += ["-metadata", f"{tag_key}={tag_val}"]
+    cmd += [
         "-map", "0:V",
         "-map", "0:a?",
         "-f", fmt,
@@ -701,7 +715,7 @@ async def _try_methods(
         # new container — skip straight to AAC transcoding.
         audio_options = (True,) if force_audio_transcode else (False, True)
         for audio_transcode in audio_options:
-            cmd = build_encode_cmd(input_path, temp_path, method, fmt, gpu_idx, hwaccel=hwaccel, transcode_audio=audio_transcode, strip_metadata=settings.get("strip_metadata", False))
+            cmd = build_encode_cmd(input_path, temp_path, method, fmt, gpu_idx, hwaccel=hwaccel, transcode_audio=audio_transcode, strip_metadata=settings.get("strip_metadata", False), container_tags=settings.get("container_tags"))
             audio_label = " +aac" if audio_transcode else ""
             _log.info("Trying method %s (%s%s): %s", method.name, decode_label, audio_label, " ".join(cmd))
 
