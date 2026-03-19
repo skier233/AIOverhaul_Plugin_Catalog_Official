@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Sequence
+from pydantic import TypeAdapter
 from .models import AIModelInfo, AIVideoResultV3, ImageResult, VideoServerResponse
 from stash_ai_server.services.base import RemoteServiceBase
 
@@ -39,7 +40,7 @@ async def call_scene_api(
     threshold: float,
     skip_categories: Sequence[str] | None = None,
 ) -> VideoServerResponse | None:
-    """Call the /scene endpoint for a single scene."""   
+    """Call the /scene endpoint for a single scene."""
     try:
         payload = {
             "path": scene_path,
@@ -60,15 +61,14 @@ async def call_scene_api(
     except Exception as exc:  # noqa: BLE001
         _log.warning("scene API call failed for scene_path=%s: %s", scene_path, exc)
         return None
-    
+
 async def get_active_scene_models(service: RemoteServiceBase) -> list[AIModelInfo]:
     """Fetch the list of active models from the remote service."""
     try:
         return await service.http.get(
             ACTIVE_SCENE_MODELS,
-            response_model=list[AIModelInfo],
+            response_model=TypeAdapter(list[AIModelInfo]),
         )
-        
     except asyncio.CancelledError:  # pragma: no cover
         raise
     except Exception as exc:  # noqa: BLE001
