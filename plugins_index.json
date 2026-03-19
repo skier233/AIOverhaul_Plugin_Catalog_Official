@@ -40,7 +40,7 @@
     {
       "name": "skier_aitagging",
       "humanName": "Skier AI Tagging",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "description": "AI tagging of images and videos that generates time-based tags for scenes and markers in stash",
       "dependsOn": [],
       "serverLink": "https://github.com/skier233/nsfw_ai_model_server?tab=readme-ov-file#nsfw-ai-tagging-enhance-your-local-content-organization",
