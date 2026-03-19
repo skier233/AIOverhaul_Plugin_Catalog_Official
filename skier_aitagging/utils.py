@@ -46,12 +46,12 @@ def resolve_image_tag_id_from_label(label: str, config) -> int | None:
 
     normalized = (label or "").strip()
     if not normalized:
-        _log.warning("Failed to resolve image tag label '%%s': empty or invalid", label)
+        _log.warning("Failed to resolve image tag label '%s': empty or invalid", label)
         return None
     settings = config.resolve(normalized)
     stash_name = settings.stash_name or normalized
     if not stash_name:
-        _log.warning("Failed to resolve image tag label '%%s': no stash name found", label)
+        _log.warning("Failed to resolve image tag label '%s': no stash name found", label)
         return None
     return resolve_ai_tag_reference(stash_name)
 

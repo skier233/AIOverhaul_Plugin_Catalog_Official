@@ -10,6 +10,7 @@ from stash_ai_server.db.session import get_db
 from stash_ai_server.api.plugins import _require_plugin_active
 from stash_ai_server.services import registry as services_registry
 import logging
+from . import logic
 
 logger = logging.getLogger(__name__)
 
@@ -43,25 +44,20 @@ async def get_plugin_available_tags(db: Session = Depends(get_db)):
     """
     _require_plugin_active(db, PLUGIN_NAME)
 
-    # Find the plugin service
     service = None
     for svc in services_registry.services.list():
         if getattr(svc, "plugin_name", None) == PLUGIN_NAME:
             service = svc
             break
 
-    if not service:
-        raise HTTPException(status_code=404, detail="PLUGIN_SERVICE_NOT_FOUND")
-
-    # Check if service has the method
-    if not hasattr(service, "get_available_tags_data"):
-        raise HTTPException(status_code=400, detail="PLUGIN_DOES_NOT_SUPPORT_TAG_EDITING")
+    if service is None:
+        raise HTTPException(status_code=404, detail="Plugin service not found")
 
     try:
-        result = await service.get_available_tags_data()
+        result = await logic.get_available_tags_data(service=service)
         return result
     except Exception as exc:
-        logger.exception("Failed to get available tags for plugin %%s", PLUGIN_NAME)
+        logger.exception("Failed to get available tags for plugin %s", PLUGIN_NAME)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -69,18 +65,6 @@ async def get_plugin_available_tags(db: Session = Depends(get_db)):
 async def update_plugin_tag_settings(payload: TagSettingsUpdate, db: Session = Depends(get_db)):
     """Update full tag settings for a plugin."""
     _require_plugin_active(db, PLUGIN_NAME)
-
-    service = None
-    for svc in services_registry.services.list():
-        if getattr(svc, "plugin_name", None) == PLUGIN_NAME:
-            service = svc
-            break
-
-    if not service:
-        raise HTTPException(status_code=404, detail="PLUGIN_SERVICE_NOT_FOUND")
-
-    if not hasattr(service, "update_tag_settings"):
-        raise HTTPException(status_code=400, detail="PLUGIN_DOES_NOT_SUPPORT_TAG_EDITING")
 
     try:
         # Convert Pydantic models to dicts
@@ -95,10 +79,10 @@ async def update_plugin_tag_settings(payload: TagSettingsUpdate, db: Session = D
                 "max_gap": setting_update.max_gap,
             }
 
-        result = service.update_tag_settings(settings_dict)
+        result = logic.update_tag_settings(settings_dict)
         return result
     except Exception as exc:
-        logger.exception("Failed to update tag settings for plugin %%s", PLUGIN_NAME)
+        logger.exception("Failed to update tag settings for plugin %s", PLUGIN_NAME)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

@@ -28,7 +28,7 @@ async def call_images_api(service: RemoteServiceBase, image_paths: list[str]) ->
     except asyncio.CancelledError:  # pragma: no cover
         raise
     except Exception as exc:  # noqa: BLE001
-        _log.warning("images API call failed: %%s", exc)
+        _log.warning("images API call failed: %s", exc)
         raise
 
 async def call_scene_api(
@@ -59,7 +59,7 @@ async def call_scene_api(
     except asyncio.CancelledError:  # pragma: no cover
         raise
     except Exception as exc:  # noqa: BLE001
-        _log.warning("scene API call failed for scene_path=%%s: %%s", scene_path, exc)
+        _log.warning("scene API call failed for scene_path=%s: %s", scene_path, exc)
         return None
 
 async def get_active_scene_models(service: RemoteServiceBase) -> list[AIModelInfo]:
@@ -72,5 +72,5 @@ async def get_active_scene_models(service: RemoteServiceBase) -> list[AIModelInf
     except asyncio.CancelledError:  # pragma: no cover
         raise
     except Exception as exc:  # noqa: BLE001
-        _log.warning("Failed to fetch active models: %%s", exc)
+        _log.warning("Failed to fetch active models: %s", exc)
         return []

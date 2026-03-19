@@ -114,3 +114,13 @@ def is_vr_scene(tag_ids: list[int | str]) -> bool:
     global VR_Tag_Id
     normalized = _to_int_list(tag_ids)
     return VR_Tag_Id in normalized if VR_Tag_Id else False
+
+def get_ai_tagged_tag_id() -> int | None:
+    """Get the tag ID for the AI_Tagged tag."""
+    global AI_Tagged_Tag_Id
+    return AI_Tagged_Tag_Id
+
+def get_ai_tags_cache() -> dict[str, int]:
+    """Get the cache of AI tag names to IDs."""
+    global AI_tags_cache
+    return AI_tags_cache

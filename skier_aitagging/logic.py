@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Sequence
+from typing import Sequence, TypeVar, Awaitable
 from stash_ai_server.actions.models import ContextInput
 from stash_ai_server.tasks.models import TaskRecord
 
@@ -44,19 +44,31 @@ from stash_ai_server.db.ai_results_store import (
     store_scene_run_async,
     purge_scene_categories,
 )
+import csv
+import logging
+from .http_handler import get_active_scene_models
 
 _log = logging.getLogger(__name__)
 
 MAX_IMAGES_PER_REQUEST = 288
 
-SCENE_FRAME_INTERVAL = 2.0
 SCENE_THRESHOLD = 0.5
 
 current_server_models_cache: list[AIModelInfo] = []
 
 MODELS_CACHE_REFRESH_INTERVAL = 600  # seconds
+STASH_CALL_TIMEOUT_SECONDS = 30.0
 
 next_cache_refresh_time = 0.0
+
+T = TypeVar("T")
+
+
+async def _with_stash_timeout(coro: Awaitable[T], operation: str) -> T:
+    try:
+        return await asyncio.wait_for(coro, timeout=STASH_CALL_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"Stash call timed out during {operation}") from exc
 
 
 def _short_error(message: str, *, limit: int = 120) -> str:
@@ -85,7 +97,7 @@ async def _apply_scene_markers_and_tags(
     service_name: str,
     scene_duration: float,
     existing_scene_tag_ids: Sequence[int] | None,
-    apply_ai_tagged_tag: bool,
+    apply_ai_tagged_tag: bool = True,
 ):
     """Reload stored markers and tags for a scene and provide basic counts."""
 
@@ -156,7 +168,10 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
         }
 
     try:
-        image_metadata = await stash_api.get_image_paths_and_tags_async(image_ids)
+        image_metadata = await _with_stash_timeout(
+            stash_api.get_image_paths_and_tags_async(image_ids),
+            "get_image_paths_and_tags",
+        )
     except Exception as exc:
         _log.exception("Failed to fetch image metadata for ids=%s", image_ids)
         detail = _short_error(str(exc) or exc.__class__.__name__)
@@ -219,7 +234,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
         _, should_reprocess = determine_model_plan(
             current_models=active_models,
             previous_models=historical_models,
-            current_frame_interval=SCENE_FRAME_INTERVAL,
+            current_frame_interval=service.tagging_frame_interval if hasattr(service, "tagging_frame_interval") else 2.0,
             current_threshold=SCENE_THRESHOLD,
         )
 
@@ -295,9 +310,15 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 
         try:
             if stored_tag_ids:
-                await stash_api.remove_tags_from_images_async([image_id], stored_tag_ids)
+                await _with_stash_timeout(
+                    stash_api.remove_tags_from_images_async([image_id], stored_tag_ids),
+                    "remove_tags_from_images",
+                )
             if normalized_ids:
-                await stash_api.add_tags_to_images_async([image_id], normalized_ids)
+                await _with_stash_timeout(
+                    stash_api.add_tags_to_images_async([image_id], normalized_ids),
+                    "add_tags_to_images",
+                )
         except Exception:
             _log.exception("Failed to refresh tags for image_id=%s", image_id)
             failure_reasons[image_id] = "failed to sync tags with Stash"
@@ -314,7 +335,10 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
         if image_id in reprocess_request_ids and image_id not in failed_images
     ]
     if reprocess_cleared:
-        await remove_reprocess_tag_from_images(reprocess_cleared)
+        await _with_stash_timeout(
+            remove_reprocess_tag_from_images(reprocess_cleared),
+            "remove_reprocess_tag_from_images",
+        )
 
     status = "success"
     if failed_ids:
@@ -360,7 +384,10 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
 
     service = params["service"]
     try:
-        scene_path, scene_tags, scene_duration = await stash_api.get_scene_path_and_tags_and_duration_async(scene_id)
+        scene_path, scene_tags, scene_duration = await _with_stash_timeout(
+            stash_api.get_scene_path_and_tags_and_duration_async(scene_id),
+            "get_scene_path_and_tags_and_duration",
+        )
     except Exception as exc:
         _log.exception("Failed to load scene metadata for scene_id=%s", scene_id)
         detail = _short_error(str(exc) or exc.__class__.__name__)
@@ -401,7 +428,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
     skip_categories, should_reprocess = determine_model_plan(
         current_models=current_server_models_cache,
         previous_models=historical_models,
-        current_frame_interval=SCENE_FRAME_INTERVAL,
+        current_frame_interval=service.tagging_frame_interval if hasattr(service, "tagging_frame_interval") else 2.0,
         current_threshold=SCENE_THRESHOLD,
     )
 
@@ -454,7 +481,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         response = await call_scene_api(
             service,
             remote_scene_path,
-            SCENE_FRAME_INTERVAL,
+            service.tagging_frame_interval if hasattr(service, "tagging_frame_interval") else 2.0,
             vr_scene,
             threshold=SCENE_THRESHOLD,
             skip_categories=skip_categories,
@@ -475,6 +502,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                 service_name=service.name,
                 scene_duration=scene_duration,
                 existing_scene_tag_ids=scene_tags,
+                apply_ai_tagged_tag=service.apply_ai_tagged_tag,
             )
             message = (
                 f"Scene #{scene_id}: remote service returned no data. "
@@ -525,7 +553,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                 plugin_name=service.plugin_name,
                 scene_id=scene_id,
                 input_params={
-                    "frame_interval": SCENE_FRAME_INTERVAL,
+                    "frame_interval": service.tagging_frame_interval if hasattr(service, "tagging_frame_interval") else 2.0,
                     "vr_video": vr_scene,
                     "threshold": SCENE_THRESHOLD,
                 },
@@ -752,3 +780,150 @@ async def tag_images(service: RemoteServiceBase, ctx: ContextInput, params: dict
         "count": len(child_ids),
         "held": spawn_result.get("held", False),
     }
+
+
+# ------------------------------------------------------------------
+# Tag configuration methods (for plugin endpoints)
+# ------------------------------------------------------------------
+
+
+async def get_available_tags_data(service: RemoteServiceBase) -> dict:
+    """Get available tags from CSV file with full settings.
+
+    Returns:
+        dict with 'tags' (full settings), 'models', and 'defaults' keys.
+    """
+    
+    _log = logging.getLogger(__name__)
+    
+    # Get tag config
+    tag_config_obj = get_tag_configuration()
+    
+    # Read tags directly from CSV file
+    tags_list = []
+    defaults = {}
+    csv_path = tag_config_obj.source_path
+    
+    if not csv_path.exists():
+        _log.warning("Tag settings CSV file does not exist at %s", csv_path)
+        return {'tags': [], 'models': [], 'defaults': {}}
+    
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames is None:
+                _log.warning("Tag settings CSV file is missing a header row")
+                return {'tags': [], 'models': [], 'defaults': {}}
+            
+            for row in reader:
+                # Get tag name from CSV
+                tag_name = (row.get('tag_name') or row.get('tag') or '').strip()
+                
+                # Extract default values from __default__ row
+                if tag_name.lower() == '__default__':
+                    defaults['required_scene_tag_duration'] = row.get('RequiredSceneTagDuration', '').strip()
+                    defaults['min_marker_duration'] = row.get('min_marker_duration', '').strip()
+                    defaults['max_gap'] = row.get('max_gap', '').strip()
+                    defaults['markers_enabled'] = row.get('markers_enabled', 'TRUE').strip().upper() == 'TRUE'
+                    continue
+                
+                # Skip empty rows
+                if not tag_name or tag_name.lower() in {'', '*', 'default', 'unused1', 'unused2', 'unused3', 'unused4'}:
+                    continue
+                
+                # Get resolved settings for this tag
+                settings = tag_config_obj.resolve(tag_name)
+                
+                # Get categories from CSV row (pipe-delimited list)
+                raw_category = row.get('category', '').strip()
+                if raw_category:
+                    categories = [c.strip() for c in raw_category.split('|') if c.strip()]
+                else:
+                    categories = ['Other']
+                
+                # Format required_scene_tag_duration
+                req_duration_str = None
+                if settings.required_scene_tag_duration:
+                    if settings.required_scene_tag_duration.unit == 'percent':
+                        req_duration_str = f"{settings.required_scene_tag_duration.value}%"
+                    else:
+                        req_duration_str = str(settings.required_scene_tag_duration.value)
+                
+                # Add tag with full settings
+                tags_list.append({
+                    'tag': tag_name,
+                    'name': tag_name,  # For compatibility
+                    'categories': categories,
+                    'scene_tag_enabled': settings.scene_tag_enabled,
+                    'markers_enabled': settings.markers_enabled,
+                    'image_enabled': settings.image_enabled,
+                    'required_scene_tag_duration': req_duration_str,
+                    'min_marker_duration': settings.min_marker_duration,
+                    'max_gap': settings.max_gap,
+                })
+    except Exception as exc:
+        _log.exception("Failed to read tags from CSV file %s: %s", csv_path, exc)
+        return {'tags': [], 'models': [], 'defaults': {}, 'error': f'Failed to read CSV: {str(exc)}'}
+    
+    # Fetch active models from nsfw backend
+    active_models = []
+    loaded_categories = set()
+    try:
+        active_models_list = await get_active_scene_models(service)
+        if active_models_list:
+            for model in active_models_list:
+                # Convert AIModelInfo to dict for JSON serialization
+                model_dict = {
+                    'name': model.name,
+                    'identifier': model.identifier,
+                    'version': model.version,
+                    'categories': model.categories,
+                    'type': model.type,
+                }
+                active_models.append(model_dict)
+                # Extract all categories from this model
+                if model.categories:
+                    loaded_categories.update(model.categories)
+    except Exception as exc:
+        # If backend is unavailable, log warning but continue (graceful degradation)
+        _log.warning("Failed to fetch active models from nsfw backend: %s. Showing all tags.", exc)
+    
+    return {
+        'tags': tags_list,
+        'models': active_models,
+        'loaded_categories': list(loaded_categories),
+        'defaults': defaults
+    }
+
+
+def update_tag_settings(tag_settings: dict) -> dict:
+    """Update full tag settings for multiple tags.
+    
+    Args:
+        tag_settings: Dictionary mapping tag names (normalized, lowercase) to dicts with:
+            - scene_tag_enabled: bool (optional)
+            - markers_enabled: bool (optional)
+            - image_enabled: bool (optional)
+            - required_scene_tag_duration: str (optional, e.g., "15", "15s", "35%")
+            - min_marker_duration: float (optional)
+            - max_gap: float (optional)
+    
+    Returns:
+        dict with 'status' and 'updated' count
+    """
+    tag_config_obj = get_tag_configuration()
+    
+    # Convert to format expected by tag_config
+    settings_map = {}
+    for tag_name, settings in tag_settings.items():
+        settings_map[tag_name] = {
+            'scene_tag_enabled': settings.get('scene_tag_enabled'),
+            'markers_enabled': settings.get('markers_enabled'),
+            'image_enabled': settings.get('image_enabled'),
+            'required_scene_tag_duration': settings.get('required_scene_tag_duration'),
+            'min_marker_duration': settings.get('min_marker_duration'),
+            'max_gap': settings.get('max_gap'),
+        }
+    
+    tag_config_obj.update_tag_settings(settings_map)
+    return {'status': 'ok', 'updated': len(tag_settings)}
