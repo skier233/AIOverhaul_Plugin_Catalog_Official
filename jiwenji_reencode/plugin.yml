@@ -1,0 +1,38 @@
+name: jiwenji_reencode
+human_name: Re-encode to H.265
+description: GPU-accelerated H.265 (HEVC) re-encoding of scene files using NVENC
+version: 0.1.0
+required_backend: '>=0.5.0'
+files:
+  - service
+depends_on: []
+pip_dependencies: []
+settings:
+  - key: tag_on_failure
+    label: Add Tag Indicating Conversion Failed
+    type: boolean
+    default: true
+    description: "Add a tag to scenes that fail re-encoding"
+  - key: reencode_failed_tag
+    label: Failure Tag Name
+    type: string
+    default: "reencode_failed"
+    description: "Name of the tag to apply when re-encoding fails"
+  - key: delete_after_convert
+    label: Delete Original After Successful Re-encode
+    type: boolean
+    default: true
+    description: "Delete the original file after a successful re-encode"
+
+  - key: tag_after_reencode
+    label: "Start Skier AI Tagging Job After Successful Re-encode - Requires Skier AI Tagging Plugin"
+    type: boolean
+    default: true
+    description: "Automatically run AI tagging after a successful re-encode"
+
+  # ── Advanced settings (collapsible custom renderer) ──
+  - key: reencode_advanced
+    label: Advanced Settings
+    type: reencode_settings
+    default: null
+    description: "Configure quality, concurrency, retry, GPU, and post-encode options"
