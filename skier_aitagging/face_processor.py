@@ -322,16 +322,7 @@ def _attach_frame_embeddings(
                         embedder=emb.embedder,
                         frame_index=frame_idx,
                     )
-                    # Find which track this detection belongs to
-                    for ti in matched_track_indices:
-                        if ti < len(open_tracks):
-                            # We need to check if this detection was matched to this track
-                            # Since we used greedy matching, the link is:
-                            # matched pairs stored above. But we only have sets here.
-                            # Simple approach: attach to the track that was matched to det_idx
-                            pass
-
-                    # Simpler: just check all open tracks for bbox overlap
+                    # Find the open track whose bbox best overlaps this detection
                     best_ti = _find_track_for_detection(open_tracks, det.bbox)
                     if best_ti is not None:
                         open_tracks[best_ti].embeddings.append(fe)
@@ -657,7 +648,7 @@ async def process_image_detections(
                     summary["clusters_created"] += 1
                     if cluster_id not in summary["new_cluster_ids"]:
                         summary["new_cluster_ids"].append(cluster_id)
-                    _log.info(
+                    _log.debug(
                         "Image %s: new cluster %d for face detection %d",
                         image_id, cluster_id, det_idx,
                     )
@@ -667,7 +658,7 @@ async def process_image_detections(
                         summary["matched_cluster_ids"].append(cluster_id)
                     if match_type == "auto" and cluster_id not in summary["auto_match_cluster_ids"]:
                         summary["auto_match_cluster_ids"].append(cluster_id)
-                    _log.info(
+                    _log.debug(
                         "Image %s: matched face %d to cluster %d (sim=%.3f, %s%s)",
                         image_id, det_idx, cluster_id, similarity, match_type,
                         "" if meets_quality else ", below-quality",
@@ -773,7 +764,7 @@ async def process_image_detections(
         try:
             from .face_api import precompute_cluster_thumbnails
             cached = await precompute_cluster_thumbnails(thumb_ids)
-            _log.info("Image %s: pre-cached thumbnails for %d cluster(s)", image_id, cached)
+            _log.debug("Image %s: pre-cached thumbnails for %d cluster(s)", image_id, cached)
         except Exception:
             _log.debug("Thumbnail pre-compute failed for image %s", image_id, exc_info=True)
 
@@ -879,7 +870,7 @@ async def process_video_detections(
         )
         filtered_tracks.append((t, meets_quality))
     if hard_dropped:
-        _log.info(
+        _log.debug(
             "Scene %s: hard-filtered %d of %d track(s) "
             "(hard_min_score=%.2f, hard_min_norm=%.1f)",
             scene_id, hard_dropped, before,
@@ -887,7 +878,7 @@ async def process_video_detections(
         )
     below_quality = sum(1 for _, mq in filtered_tracks if not mq)
     if below_quality:
-        _log.info(
+        _log.debug(
             "Scene %s: %d track(s) below quality floor (will match existing "
             "clusters only, min_score=%.2f, min_norm=%.1f)",
             scene_id, below_quality, min_detection_score, min_embedding_norm,
@@ -960,7 +951,7 @@ async def process_video_detections(
                     summary["clusters_created"] += 1
                     if cluster_id not in summary["new_cluster_ids"]:
                         summary["new_cluster_ids"].append(cluster_id)
-                    _log.info(
+                    _log.debug(
                         "Scene %s track %d: new cluster %d",
                         scene_id, track_idx, cluster_id,
                     )
@@ -973,7 +964,7 @@ async def process_video_detections(
                     # Seed count from DB on first encounter of existing cluster
                     if cluster_id not in cluster_emb_counts:
                         cluster_emb_counts[cluster_id] = count_cluster_embeddings(cluster_id)
-                    _log.info(
+                    _log.debug(
                         "Scene %s track %d: matched to cluster %d (sim=%.3f, %s%s)",
                         scene_id, track_idx, cluster_id, similarity, match_type,
                         "" if meets_quality else ", below-quality",
@@ -1055,9 +1046,8 @@ async def process_video_detections(
         )
         merges = _find_auto_merges(all_cluster_ids, auto_threshold=auto_threshold)
         for surviving_id, absorbed_id in merges:
-            _log.info(
-                "Scene %s: auto-merging cluster %d into %d "
-                "(centroids exceeded auto threshold)",
+            _log.debug(
+                "Scene %s: auto-merging cluster %d into %d",
                 scene_id, absorbed_id, surviving_id,
             )
             merge_clusters(surviving_id, absorbed_id)
@@ -1112,7 +1102,7 @@ async def process_video_detections(
         try:
             from .face_api import precompute_cluster_thumbnails
             cached = await precompute_cluster_thumbnails(thumb_ids)
-            _log.info("Scene %s: pre-cached thumbnails for %d cluster(s)", scene_id, cached)
+            _log.debug("Scene %s: pre-cached thumbnails for %d cluster(s)", scene_id, cached)
         except Exception:
             _log.debug("Thumbnail pre-compute failed for scene %s", scene_id, exc_info=True)
 
@@ -1230,8 +1220,8 @@ def _update_affected_centroids(session: Any, summary: dict[str, Any]) -> None:
         _log.debug("StashDB matching skipped or failed", exc_info=True)
 
 
-def _read_setting_int(key: str, default: int) -> int:
-    """Read an integer plugin setting from the DB, returning *default* on any error."""
+def _read_setting_raw(key: str) -> str | None:
+    """Read a raw plugin setting value from the DB, returning *None* on any error."""
     try:
         from stash_ai_server.models.plugin import PluginSetting
         from sqlalchemy import select as sa_select
@@ -1245,10 +1235,31 @@ def _read_setting_int(key: str, default: int) -> int:
             ).first()
             if row:
                 raw = row[0] if row[0] is not None else row[1]
-                if raw is not None:
-                    return int(float(raw))
+                return raw
     except Exception:
         _log.debug("Could not read setting %s", key, exc_info=True)
+    return None
+
+
+def _read_setting_int(key: str, default: int) -> int:
+    """Read an integer plugin setting from the DB, returning *default* on any error."""
+    raw = _read_setting_raw(key)
+    if raw is not None:
+        try:
+            return int(float(raw))
+        except (ValueError, TypeError):
+            pass
+    return default
+
+
+def _read_setting_float(key: str, default: float) -> float:
+    """Read a float plugin setting from the DB, returning *default* on any error."""
+    raw = _read_setting_raw(key)
+    if raw is not None:
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            pass
     return default
 
 
@@ -1271,25 +1282,7 @@ def _check_stashdb_matches_for_clusters(cluster_ids: set[int]) -> None:
         return
 
     # Read auto-link threshold from plugin settings (0 = disabled)
-    # Default is 0.75 per plugin.yml; falls back to 0.0 only if unreadable.
-    auto_link_threshold = 0.70
-    try:
-        from stash_ai_server.models.plugin import PluginSetting
-        from sqlalchemy import select as sa_select
-        with get_session_local()() as s:
-            row = s.execute(
-                sa_select(PluginSetting.value, PluginSetting.default_value)
-                .where(
-                    PluginSetting.plugin_name == "skier_aitagging",
-                    PluginSetting.key == "stashdb_auto_link_threshold",
-                )
-            ).first()
-            if row:
-                raw = row[0] if row[0] is not None else row[1]
-                if raw is not None:
-                    auto_link_threshold = float(raw)
-    except Exception:
-        _log.debug("Could not read stashdb_auto_link_threshold setting", exc_info=True)
+    auto_link_threshold = _read_setting_float("stashdb_auto_link_threshold", 0.70)
 
     for cid in cluster_ids:
         try:
@@ -1325,9 +1318,9 @@ def _check_stashdb_matches_for_clusters(cluster_ids: set[int]) -> None:
                 )
                 s.commit()
 
-            _log.info(
-                "Cluster %d matched StashDB performer '%s' (%s) with similarity %.3f",
-                cid, name, stashdb_id, similarity,
+            _log.debug(
+                "Cluster %d matched StashDB performer '%s' (%.1f%%)",
+                cid, name, similarity * 100,
             )
 
             # Auto-link if above threshold
@@ -1411,7 +1404,7 @@ def _auto_link_cluster_to_stashdb(
         # If both thresholds are 0, always allow (backward-compatible).
         if min_scenes > 0 or min_images > 0:
             if scene_count < min_scenes and image_count < min_images:
-                _log.info(
+                _log.debug(
                     "Auto-link: skipping performer creation for cluster %d "
                     "('%s') — appearances too low (scenes=%d < %d, images=%d < %d)",
                     cluster_id, performer_name,

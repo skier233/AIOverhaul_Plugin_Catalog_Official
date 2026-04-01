@@ -275,7 +275,7 @@ async def _set_performer_image_from_cluster(
             b64 = base64.b64encode(idx_cache.read_bytes()).decode("ascii")
             data_uri = f"data:image/jpeg;base64,{b64}"
             stash_api.update_performer_image(performer_id, data_uri)
-            _log.info("Set performer %s image from cluster %d thumbnail index %d (cached)", performer_id, cluster_id, thumbnail_index)
+            _log.debug("Set performer %s image from cluster %d thumbnail index %d (cached)", performer_id, cluster_id, thumbnail_index)
             return
         # If cache miss for the specific index, fall through to re-rank
 
@@ -324,7 +324,7 @@ async def _set_performer_image_from_cluster(
     data_uri = f"data:image/jpeg;base64,{b64}"
 
     stash_api.update_performer_image(performer_id, data_uri)
-    _log.info("Set performer %s image from cluster %d", performer_id, cluster_id)
+    _log.debug("Set performer %s image from cluster %d", performer_id, cluster_id)
 
 
 async def _hydrate_performer_from_stashdb_ref(
@@ -566,17 +566,17 @@ def _get_thumbnail_cache_dir() -> Path:
                 test_file.write_bytes(b"ok")
                 test_file.unlink()
                 _THUMBNAIL_CACHE_DIR = p
-                _log.info("Face thumbnail cache: %s (Stash generated)", p)
+                _log.debug("Face thumbnail cache: %s (Stash generated)", p)
                 return _THUMBNAIL_CACHE_DIR
             except Exception:
                 _log.warning("Cannot use Stash generated path for face crops; falling back", exc_info=True)
         else:
-            _log.info("Stash generated path unavailable; using data_dir for face thumbnails")
+            _log.debug("Stash generated path unavailable; using data_dir for face thumbnails")
         # Fallback to data_dir
         from stash_ai_server.core.config import settings
         _THUMBNAIL_CACHE_DIR = Path(settings.data_dir) / "face_thumbnails"
         _THUMBNAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _log.info("Face thumbnail cache (fallback): %s", _THUMBNAIL_CACHE_DIR)
+        _log.debug("Face thumbnail cache (fallback): %s", _THUMBNAIL_CACHE_DIR)
     return _THUMBNAIL_CACHE_DIR
 
 
@@ -797,7 +797,7 @@ async def _build_cluster_detail(cluster_id: int) -> dict:
         return None
 
     exemplars = get_cluster_embeddings(cluster_id, exemplars_only=True)
-    _log.info(
+    _log.debug(
         "_build_cluster_detail cluster %d: %d exemplars, ids=%s",
         cluster_id, len(exemplars), [e.id for e in exemplars],
     )
@@ -1040,7 +1040,7 @@ async def delete_cluster_exemplar(
     # Snapshot entity pairs BEFORE removal (for performer cascade)
     entities_before = set(get_cluster_entity_pairs(cluster_id)) if performer_id else set()
 
-    _log.info(
+    _log.debug(
         "DELETE exemplar: cluster=%d embedding=%d, exemplars_before=%d ids=%s",
         cluster_id, embedding_id, len(embs), [e.id for e in embs],
     )
@@ -1052,7 +1052,7 @@ async def delete_cluster_exemplar(
 
     # Verify the removal actually took effect
     embs_after = get_cluster_embeddings(cluster_id, exemplars_only=True)
-    _log.info(
+    _log.debug(
         "DELETE exemplar: cluster=%d, result=%s, exemplars_after=%d ids=%s",
         cluster_id, result, len(embs_after), [e.id for e in embs_after],
     )
@@ -3565,7 +3565,7 @@ async def auto_link_by_presence(
                 link_performer(cid, performer_id, label=performer_name or None)
                 _apply_performer_to_cluster_entities(cid, performer_id)
                 linked += 1
-                _log.info(
+                _log.debug(
                     "Auto-link-by-presence: cluster %d → performer %d (%s) "
                     "scenes=%d images=%d ratio=%.2f",
                     cid, performer_id, performer_name, scene_cnt, image_cnt, ratio,

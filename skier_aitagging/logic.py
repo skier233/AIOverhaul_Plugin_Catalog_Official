@@ -311,7 +311,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                 # Log structured data so we can verify the v3 response is parsed correctly
                 det_count = count_detections(parsed_image)
                 region_count = count_regions(parsed_image)
-                _log.info(
+                _log.debug(
                     "Image %s parsed: %d tag category(ies) %s, "
                     "%d detection(s) across %s, %d region group(s) %s",
                     image_id,
@@ -324,7 +324,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                 )
                 for det_cat, dets in parsed_image.detections.items():
                     for i, det in enumerate(dets):
-                        _log.info(
+                        _log.debug(
                             "  Image %s detection [%s][%d]: bbox=%s score=%.3f detector=%s",
                             image_id, det_cat, i, det.bbox, det.score, det.detector,
                         )
@@ -337,7 +337,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                         for emb_cat in emb_keys:
                             embeddings = parse_embeddings(reg, emb_cat)
                             for emb in embeddings:
-                                _log.info(
+                                _log.debug(
                                     "  Image %s region [%s] det_idx=%d: %s embedder=%s norm=%.2f dim=%d",
                                     image_id, region_key, reg.detection_index,
                                     emb_cat, emb.embedder, emb.norm, len(emb.vector),
@@ -366,7 +366,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                             exclude_run_id=run_id,
                         )
                         if stale:
-                            _log.info("Image %s: purged %d stale detection track(s)", image_id, stale)
+                            _log.debug("Image %s: purged %d stale detection track(s)", image_id, stale)
                     except Exception:
                         _log.exception("Failed to cleanup stale detections for image %s", image_id)
                     try:
@@ -387,7 +387,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                             max_embeddings_per_cluster=service.face_max_embeddings_per_cluster,
                         )
                         if face_summary.get("tracks_created"):
-                            _log.info(
+                            _log.debug(
                                 "Image %s face processing: %d track(s), %d embedding(s), "
                                 "%d cluster match(es), %d new cluster(s)",
                                 image_id,
@@ -539,7 +539,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
     if has_ai_tagged(scene_tags) and not historical_models:
         legacy_result = await LegacyAIVideoResult.try_load_from_scene_path(scene_path)
         if legacy_result is None:
-            _log.info("No legacy AI json found for scene_id=%s", scene_id)
+            _log.debug("No legacy AI json found for scene_id=%s", scene_id)
         else:
             imported = await legacy_result.save_to_db(scene_id=scene_id, service=service)
             if imported:
@@ -568,7 +568,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
 
     try:
         if not should_reprocess:
-            _log.info("Skipping remote tagging for scene_id=%s; existing data considered current", scene_id)
+            _log.debug("Skipping remote tagging for scene_id=%s; existing data considered current", scene_id)
             (
                 markers_by_tag,
                 tag_changes,
@@ -677,7 +677,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                 for f in parsed_frames:
                     det_cats.update(f.detections.keys())
                     region_keys.update(f.regions.keys())
-                _log.info(
+                _log.debug(
                     "Scene %s: %d frame(s) with structured data, "
                     "%d total detection(s) across %s, "
                     "%d total region result(s) across %s",
@@ -690,7 +690,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                 for pf in frames_to_log:
                     for det_cat, dets in pf.detections.items():
                         for i, det in enumerate(dets):
-                            _log.info(
+                            _log.debug(
                                 "  Scene %s frame %.1f detection [%s][%d]: "
                                 "bbox=%s score=%.3f detector=%s",
                                 scene_id, pf.frame_index, det_cat, i,
@@ -705,14 +705,14 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                             for emb_cat in emb_keys:
                                 embeddings = parse_embeddings(reg, emb_cat)
                                 for emb in embeddings:
-                                    _log.info(
+                                    _log.debug(
                                         "  Scene %s frame %.1f region [%s] det_idx=%d: "
                                         "%s embedder=%s norm=%.2f dim=%d",
                                         scene_id, pf.frame_index, region_key, reg.detection_index,
                                         emb_cat, emb.embedder, emb.norm, len(emb.vector),
                                     )
                 if len(parsed_frames) > 5:
-                    _log.info(
+                    _log.debug(
                         "  Scene %s: ... and %d more frame(s) with structured data",
                         scene_id, len(parsed_frames) - 5,
                     )
@@ -768,7 +768,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                     exclude_run_id=run_id,
                 )
                 if stale:
-                    _log.info("Scene %s: purged %d stale detection track(s)", scene_id, stale)
+                    _log.debug("Scene %s: purged %d stale detection track(s)", scene_id, stale)
             except Exception:
                 _log.exception("Failed to cleanup stale detections for scene %s", scene_id)
             try:
@@ -800,7 +800,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                         f"{face_summary['clusters_created']} new cluster(s){merge_part}"
                     )
                     face_summary_parts.append(face_msg)
-                    _log.info("Scene %s face processing: %s", scene_id, face_msg)
+                    _log.debug("Scene %s face processing: %s", scene_id, face_msg)
                     face_result_data = {
                         "faces_new": len(face_summary.get("new_cluster_ids", [])),
                         "faces_matched": face_summary["clusters_matched"],
@@ -1198,7 +1198,7 @@ async def face_scan_images_task(ctx: ContextInput, params: dict) -> dict:
                             exclude_run_id=run_id,
                         )
                         if stale:
-                            _log.info("Image %s: purged %d stale detection track(s)", image_id, stale)
+                            _log.debug("Image %s: purged %d stale detection track(s)", image_id, stale)
                     except Exception:
                         _log.exception("Failed to cleanup stale detections for image %s", image_id)
                     try:
@@ -1340,7 +1340,7 @@ async def face_scan_scene_task(ctx: ContextInput, params: dict, task_record: Tas
         should_reprocess = True
 
     if not should_reprocess:
-        _log.info("Skipping remote face scan for scene_id=%s; existing face data considered current", scene_id)
+        _log.debug("Skipping remote face scan for scene_id=%s; existing face data considered current", scene_id)
         return {
             "action_type": "face_scan",
             "scene_id": scene_id,
@@ -1417,7 +1417,7 @@ async def face_scan_scene_task(ctx: ContextInput, params: dict, task_record: Tas
                 exclude_run_id=run_id,
             )
             if stale:
-                _log.info("Scene %s: purged %d stale detection track(s)", scene_id, stale)
+                _log.debug("Scene %s: purged %d stale detection track(s)", scene_id, stale)
         except Exception:
             _log.exception("Failed to cleanup stale detections for scene %s", scene_id)
 
@@ -1451,7 +1451,7 @@ async def face_scan_scene_task(ctx: ContextInput, params: dict, task_record: Tas
                     "new_cluster_ids": face_summary.get("new_cluster_ids", []),
                     "matched_cluster_ids": face_summary.get("matched_cluster_ids", []),
                 }
-                _log.info(
+                _log.debug(
                     "Scene %s face scan: %d detected, %d matched, %d new, %d auto-merged",
                     scene_id, face_summary["tracks_created"],
                     face_summary["clusters_matched"],
