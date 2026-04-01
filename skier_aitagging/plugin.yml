@@ -2,8 +2,8 @@ name: skier_aitagging
 human_name: Skier AI Tagging
 description: AI tagging of images and videos that generates time-based tags for scenes and markers in stash
 server_link: https://github.com/skier233/nsfw_ai_model_server?tab=readme-ov-file#nsfw-ai-tagging-enhance-your-local-content-organization
-version: 0.3.2
-required_backend: '>=0.9.3'
+version: 1.0.0
+required_backend: ">=1.0.0"
 files:
   - service
 depends_on: []
@@ -39,3 +39,68 @@ settings:
     type: string
     default: "_AI"
     description: Suffix appended to backend tag names when creating Stash tags (if not explicitly defined in tag_settings.csv)
+  - key: stashdb_auto_link_threshold
+    label: StashDB Auto-Link Threshold
+    type: number
+    default: 0.60
+    description: "Minimum StashDB face match similarity (0.0-1.0) to auto-link a cluster to a performer. 0 = disabled. Data-derived: lowest confirmed match was 0.6049."
+  - key: face_scan_frame_interval
+    label: Face Scan Frame Interval
+    type: number
+    default: 6.0
+    description: Time interval in seconds between frames sampled for face-only scanning (higher = faster but may miss brief appearances)
+  - key: auto_apply_performers
+    label: Auto-Apply Performers
+    type: boolean
+    default: true
+    description: Automatically tag scenes/images with identified performers after face processing
+  - key: face_match_auto_threshold
+    label: Face Auto-Match Threshold
+    type: number
+    default: 0.50
+    description: "Minimum cosine similarity to automatically assign a face to an existing cluster (0.0-1.0). Lower = more merges, higher = stricter matching."
+  - key: face_match_review_threshold
+    label: Face Review Threshold
+    type: number
+    default: 0.40
+    description: "Minimum cosine similarity for a face to be considered a candidate match for review (0.0-1.0). Below this, faces create new clusters."
+  - key: face_max_exemplars_per_cluster
+    label: Max Exemplars Per Cluster
+    type: number
+    default: 10
+    description: Maximum number of representative face exemplar embeddings stored per cluster (used for centroid computation)
+  - key: face_max_embeddings_per_track
+    label: Max Embeddings Per Track
+    type: number
+    default: 10
+    description: Maximum face embeddings kept per detection track within a single scene
+  - key: face_embedding_dedup_threshold
+    label: Embedding Dedup Threshold
+    type: number
+    default: 0.85
+    description: "Cosine similarity above which two embeddings from the same track are considered duplicates (0.0-1.0)"
+  - key: face_min_embedding_norm
+    label: Min Embedding Norm
+    type: number
+    default: 18.0
+    description: "Minimum L2 norm for a face embedding to be used. Filters blurry/tiny faces. Good faces typically have norms 19-24."
+  - key: face_min_detection_score
+    label: Min Detection Score
+    type: number
+    default: 0.65
+    description: "Minimum detection confidence score (0.0-1.0) for a face to be processed. Lower scores are often false positives."
+  - key: face_max_embeddings_per_cluster
+    label: Max Embeddings Per Cluster
+    type: number
+    default: 20
+    description: Maximum total embeddings stored per cluster across all scenes. Limits DB growth for frequently-appearing performers.
+  - key: face_auto_create_min_scenes
+    label: Auto-Create Performer Min Scenes
+    type: number
+    default: 3
+    description: Minimum number of distinct scenes a cluster must appear in to automatically create a performer (0 = disabled)
+  - key: face_auto_create_min_images
+    label: Auto-Create Performer Min Images
+    type: number
+    default: 10
+    description: Minimum number of total face detections a cluster must have to automatically create a performer (0 = disabled)

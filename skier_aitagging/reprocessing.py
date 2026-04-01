@@ -99,3 +99,21 @@ def _should_skip_category(
         return False
 
 
+def classify_model_categories(
+    models: Sequence[AIModelInfo],
+) -> tuple[set[str], set[str]]:
+    """Split model categories into tagging vs. detection/embedding groups.
+
+    Returns ``(tag_categories, embedding_categories)`` where:
+    - *tag_categories*: categories from models whose type is ``"tagging"``
+    - *embedding_categories*: categories from models whose type is
+      ``"detection"`` or ``"embedding"``
+    """
+    tag_cats: set[str] = set()
+    emb_cats: set[str] = set()
+    for m in models:
+        if m.type == "tagging":
+            tag_cats.update(m.categories)
+        elif m.type in ("detection", "embedding"):
+            emb_cats.update(m.categories)
+    return tag_cats, emb_cats
