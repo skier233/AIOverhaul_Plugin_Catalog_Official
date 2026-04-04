@@ -823,6 +823,60 @@ async def _build_cluster_detail(cluster_id: int) -> dict:
                 "image_url": getattr(ref, "image_url", None),
             }
 
+    # Resolve scene/image titles from Stash DB when possible
+    scene_ids = [eid for etype, eid in entity_pairs if etype == "scene"]
+    scene_titles: dict[int, str] = {}
+    if scene_ids:
+        try:
+            from stash_ai_server.utils import stash_db
+            import sqlalchemy as sa
+            scenes_table = stash_db.get_stash_table("scenes", required=False)
+            if scenes_table is not None:
+                session_factory = stash_db.get_stash_sessionmaker()
+                if session_factory is not None:
+                    with session_factory() as sess:
+                        rows = sess.execute(
+                            sa.select(scenes_table.c.id, scenes_table.c.title)
+                            .where(scenes_table.c.id.in_(scene_ids))
+                        ).fetchall()
+                        for row in rows:
+                            if row[1]:
+                                scene_titles[int(row[0])] = str(row[1])
+
+                        # Fallback: for scenes without a title, try to get the
+                        # primary file basename via scenes_files → files.
+                        missing = [sid for sid in scene_ids if sid not in scene_titles]
+                        if missing:
+                            link_table = stash_db.get_first_available_table(
+                                "scenes_files", "scene_files",
+                                required_columns=("scene_id", "file_id"),
+                            )
+                            files_table = stash_db.get_stash_table("files", required=False)
+                            if (
+                                link_table is not None
+                                and files_table is not None
+                                and files_table.c.get("basename") is not None
+                            ):
+                                frows = sess.execute(
+                                    sa.select(
+                                        link_table.c.scene_id,
+                                        files_table.c.basename,
+                                    )
+                                    .select_from(
+                                        link_table.join(
+                                            files_table,
+                                            files_table.c.id == link_table.c.file_id,
+                                        )
+                                    )
+                                    .where(link_table.c.scene_id.in_(missing))
+                                ).fetchall()
+                                for frow in frows:
+                                    sid = int(frow[0])
+                                    if sid not in scene_titles and frow[1]:
+                                        scene_titles[sid] = str(frow[1])
+        except Exception:
+            _log.debug("Could not resolve scene titles from Stash DB", exc_info=True)
+
     return {
         "id": cluster.id,
         "status": cluster.status,
@@ -837,7 +891,11 @@ async def _build_cluster_detail(cluster_id: int) -> dict:
         "thumbnail_url": thumb_base,
         "stashdb_match": stashdb_match_info,
         "entities": [
-            {"entity_type": etype, "entity_id": eid}
+            {
+                "entity_type": etype,
+                "entity_id": eid,
+                **({"title": scene_titles[eid]} if etype == "scene" and eid in scene_titles else {}),
+            }
             for etype, eid in entity_pairs
         ],
         "rating100": _get_bulk_cluster_ratings([cluster_id]).get(cluster_id),
@@ -996,6 +1054,139 @@ async def get_scene_faces(
             "thumbnail_url": f"{thumb_base}/{c.id}/thumbnail",
         })
     return {"faces": result}
+
+
+@router.post("/scenes/{scene_id}/faces/{cluster_id}/detach")
+async def detach_cluster_from_scene(
+    scene_id: int,
+    cluster_id: int,
+    db: Session = Depends(get_db),
+):
+    """Detach a face cluster from a specific scene ("Wrong person").
+
+    1. Snapshots the cluster's entity list before any changes.
+    2. Moves all embeddings and tracks for this scene from the original
+       cluster into a **new** cluster (instead of orphaning them).
+    3. Recomputes centroids for both the original and new clusters.
+    4. If the original cluster was linked to a performer, uses the
+       standard cascade logic to remove the performer from any entities
+       that no longer have face data in the original cluster.
+    """
+    _require_plugin_active(db, PLUGIN_NAME)
+    from stash_ai_server.models.detections import FaceEmbedding, DetectionTrack
+    from sqlalchemy import update, select
+    from stash_ai_server.db.detection_store import (
+        update_cluster_centroid, create_cluster, find_nearest_cluster,
+        _recompute_exemplars,
+    )
+
+    cluster = get_cluster_by_id(cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    performer_id = cluster.performer_id
+
+    # Snapshot entities belonging to this cluster BEFORE the detach
+    entities_before = set(get_cluster_entity_pairs(cluster_id))
+
+    detached_embs = 0
+    detached_tracks = 0
+    new_cluster_id: int | None = None
+
+    with get_session_local()() as session:
+        # Collect the embeddings that will be detached so we can try to
+        # place them in the best alternative cluster.
+        emb_rows = session.execute(
+            select(FaceEmbedding.id, FaceEmbedding.embedding)
+            .where(
+                FaceEmbedding.cluster_id == cluster_id,
+                FaceEmbedding.entity_type == "scene",
+                FaceEmbedding.entity_id == scene_id,
+            )
+        ).fetchall()
+
+        if not emb_rows:
+            return {"detached_embeddings": 0, "detached_tracks": 0}
+
+        # Compute mean embedding of the detached faces
+        import numpy as np
+        vectors = [list(row[1]) for row in emb_rows if row[1] is not None]
+        mean_vec = np.mean(vectors, axis=0).tolist() if vectors else None
+
+        # Try to find the best alternative cluster for these embeddings.
+        # Exclude the current cluster and merged-away clusters.
+        best_target_id: int | None = None
+        REASSIGN_THRESHOLD = 0.72
+        if mean_vec is not None:
+            candidates = find_nearest_cluster(
+                mean_vec,
+                exclude_statuses=("merged_away",),
+                limit=5,
+            )
+            for cid, sim in candidates:
+                if cid != cluster_id and sim >= REASSIGN_THRESHOLD:
+                    best_target_id = cid
+                    break
+
+        # If no suitable existing cluster, create a new one
+        if best_target_id is None:
+            new = create_cluster(session, status="unidentified")
+            session.flush()
+            best_target_id = new.id
+            new_cluster_id = new.id
+
+        # Move embeddings to the target cluster
+        result = session.execute(
+            update(FaceEmbedding)
+            .where(
+                FaceEmbedding.cluster_id == cluster_id,
+                FaceEmbedding.entity_type == "scene",
+                FaceEmbedding.entity_id == scene_id,
+            )
+            .values(cluster_id=best_target_id, is_exemplar=False)
+        )
+        detached_embs = result.rowcount
+
+        # Move detection tracks to the target cluster
+        result = session.execute(
+            update(DetectionTrack)
+            .where(
+                DetectionTrack.cluster_id == cluster_id,
+                DetectionTrack.entity_type == "scene",
+                DetectionTrack.entity_id == scene_id,
+            )
+            .values(cluster_id=best_target_id)
+        )
+        detached_tracks = result.rowcount
+        session.commit()
+
+    # Recompute centroids and exemplars for both clusters
+    if detached_embs > 0:
+        update_cluster_centroid(cluster_id)
+        _recompute_exemplars(cluster_id)
+        update_cluster_centroid(best_target_id)
+        _recompute_exemplars(best_target_id)
+
+    # Cascade performer removal for entities that lost all face links
+    performers_removed = 0
+    if performer_id and detached_embs > 0:
+        performers_removed = _cascade_performer_unassignment(
+            cluster_id, performer_id, entities_before,
+        )
+
+    _log.info(
+        "Detached cluster %d from scene %d: %d embeddings, %d tracks → "
+        "target cluster %d (new=%s), performers_removed=%d",
+        cluster_id, scene_id, detached_embs, detached_tracks,
+        best_target_id, new_cluster_id is not None, performers_removed,
+    )
+    return {
+        "detached_embeddings": detached_embs,
+        "detached_tracks": detached_tracks,
+        "new_cluster_id": new_cluster_id,
+        "target_cluster_id": best_target_id,
+        "performers_removed": performers_removed,
+    }
 
 
 @router.delete("/clusters/{cluster_id}/exemplars/{embedding_id}")
@@ -1423,6 +1614,40 @@ async def merge_face_clusters(
     return {"status": "ok"}
 
 
+class BulkMergeRequest(BaseModel):
+    cluster_ids: list[int]
+
+
+@router.post("/clusters/bulk-merge")
+async def bulk_merge_face_clusters(
+    payload: BulkMergeRequest,
+    db: Session = Depends(get_db),
+):
+    """Merge multiple clusters into the one with the highest sample_count.
+
+    Requires at least two cluster IDs.  The surviving cluster is the one
+    with the most embeddings; all others are absorbed into it.
+    """
+    _require_plugin_active(db, PLUGIN_NAME)
+    ids = payload.cluster_ids
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 cluster IDs")
+
+    clusters = [get_cluster_by_id(cid) for cid in ids]
+    found = [(c.id, c.sample_count or 0) for c in clusters if c is not None]
+    if len(found) < 2:
+        raise HTTPException(status_code=404, detail="Fewer than 2 valid clusters found")
+
+    # Pick the cluster with the highest sample count as the survivor
+    found.sort(key=lambda t: t[1], reverse=True)
+    surviving_id = found[0][0]
+
+    for cid, _ in found[1:]:
+        merge_clusters(surviving_id, cid)
+
+    return {"status": "ok", "surviving_id": surviving_id, "merged_count": len(found) - 1}
+
+
 class BulkLinkToSuggestedRequest(BaseModel):
     cluster_ids: list[int]
 
@@ -1832,14 +2057,15 @@ async def get_cluster_thumbnail(
     # ------------------------------------------------------------------
     scored: list[tuple[float, int, bytes, list[float]]] = []
 
-    video_path: str | None = None
-    first_entity_type = candidates[0][0]
-    first_entity_id = candidates[0][1]
+    video_path_cache: dict[int, str | None] = {}
 
-    if first_entity_type == "scene":
-        video_path = await asyncio.to_thread(_get_scene_file_path, first_entity_id)
-        if video_path and not Path(video_path).is_file():
-            video_path = None
+    async def _resolve_video_path(scene_id: int) -> str | None:
+        if scene_id not in video_path_cache:
+            vp = await asyncio.to_thread(_get_scene_file_path, scene_id)
+            if vp and not Path(vp).is_file():
+                vp = None
+            video_path_cache[scene_id] = vp
+        return video_path_cache[scene_id]
 
     for cand_idx, (entity_type, entity_id, bbox, timestamp_s) in enumerate(candidates):
         if not bbox or len(bbox) != 4:
@@ -1847,10 +2073,12 @@ async def get_cluster_thumbnail(
 
         source_bytes: bytes | None = None
 
-        if entity_type == "scene" and video_path:
-            source_bytes = await asyncio.to_thread(
-                _extract_video_frame, video_path, timestamp_s,
-            )
+        if entity_type == "scene":
+            video_path = await _resolve_video_path(entity_id)
+            if video_path:
+                source_bytes = await asyncio.to_thread(
+                    _extract_video_frame, video_path, timestamp_s,
+                )
 
         if source_bytes is None:
             source_bytes = await _fetch_source_via_stash(entity_type, entity_id)
@@ -2571,6 +2799,7 @@ async def get_suggested_performers(
                     "name": matched_ref.name,
                     "similarity": cluster.stashdb_match_score,
                     "image_url": getattr(matched_ref, "image_url", None),
+                    "source_endpoint": matched_ref.source_endpoint,
                 },
             })
         else:
@@ -2607,6 +2836,7 @@ async def get_suggested_performers(
                         "name": matched_ref.name,
                         "similarity": cluster.stashdb_match_score,
                         "image_url": getattr(matched_ref, "image_url", None),
+                        "source_endpoint": matched_ref.source_endpoint,
                     },
                 })
 
@@ -2632,6 +2862,7 @@ async def get_suggested_performers(
                         "disambiguation": matched_ref.disambiguation,
                         "similarity": cluster.stashdb_match_score,
                         "image_url": getattr(matched_ref, "image_url", None),
+                        "source_endpoint": matched_ref.source_endpoint,
                     },
                 })
 
@@ -3391,6 +3622,7 @@ async def dismiss_stashdb_match(cluster_id: int, db: Session = Depends(get_db)):
         sess.commit()
 
     return {"status": "ok", "cluster_id": cluster_id}
+
 
 
 @router.get("/stashdb/stats")

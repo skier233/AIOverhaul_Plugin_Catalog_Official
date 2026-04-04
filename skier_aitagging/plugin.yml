@@ -3,7 +3,7 @@ human_name: Skier AI Tagging
 description: AI tagging of images and videos that generates time-based tags for scenes and markers in stash
 server_link: https://github.com/skier233/nsfw_ai_model_server?tab=readme-ov-file#nsfw-ai-tagging-enhance-your-local-content-organization
 version: 1.0.0
-required_backend: ">=0.9.7"
+required_backend: ">=1.0.0"
 files:
   - service
 depends_on: []
@@ -39,6 +39,16 @@ settings:
     type: string
     default: "_AI"
     description: Suffix appended to backend tag names when creating Stash tags (if not explicitly defined in tag_settings.csv)
+  - key: stashdb_auto_link_enabled
+    label: Enable StashDB Auto-Link
+    type: boolean
+    default: true
+    description: Automatically match faces to StashDB performers using embedding similarity
+  - key: stashdb_auto_create_performers
+    label: Auto-Create Performers from StashDB
+    type: boolean
+    default: true
+    description: Create new performers in Stash when a high-confidence StashDB match has no local performer
   - key: stashdb_auto_link_threshold
     label: StashDB Auto-Link Threshold
     type: number

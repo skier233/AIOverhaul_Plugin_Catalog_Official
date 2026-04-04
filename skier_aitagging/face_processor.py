@@ -1220,49 +1220,6 @@ def _update_affected_centroids(session: Any, summary: dict[str, Any]) -> None:
         _log.debug("StashDB matching skipped or failed", exc_info=True)
 
 
-def _read_setting_raw(key: str) -> str | None:
-    """Read a raw plugin setting value from the DB, returning *None* on any error."""
-    try:
-        from stash_ai_server.models.plugin import PluginSetting
-        from sqlalchemy import select as sa_select
-        with get_session_local()() as s:
-            row = s.execute(
-                sa_select(PluginSetting.value, PluginSetting.default_value)
-                .where(
-                    PluginSetting.plugin_name == "skier_aitagging",
-                    PluginSetting.key == key,
-                )
-            ).first()
-            if row:
-                raw = row[0] if row[0] is not None else row[1]
-                return raw
-    except Exception:
-        _log.debug("Could not read setting %s", key, exc_info=True)
-    return None
-
-
-def _read_setting_int(key: str, default: int) -> int:
-    """Read an integer plugin setting from the DB, returning *default* on any error."""
-    raw = _read_setting_raw(key)
-    if raw is not None:
-        try:
-            return int(float(raw))
-        except (ValueError, TypeError):
-            pass
-    return default
-
-
-def _read_setting_float(key: str, default: float) -> float:
-    """Read a float plugin setting from the DB, returning *default* on any error."""
-    raw = _read_setting_raw(key)
-    if raw is not None:
-        try:
-            return float(raw)
-        except (ValueError, TypeError):
-            pass
-    return default
-
-
 def _check_stashdb_matches_for_clusters(cluster_ids: set[int]) -> None:
     """For each cluster, search StashDB refs and store the best match.
 
@@ -1271,6 +1228,13 @@ def _check_stashdb_matches_for_clusters(cluster_ids: set[int]) -> None:
     linked to the corresponding local performer (creating one if needed).
     """
     from stash_ai_server.db.stashdb_store import find_nearest_stashdb_ref
+    from stash_ai_server.plugin_runtime.settings_registry import load_plugin_settings
+
+    _s = load_plugin_settings("skier_aitagging")
+
+    # Quick check: is auto-link globally disabled?
+    if str(_s.get("stashdb_auto_link_enabled", "true")).strip().lower() in ("0", "false", "no", "off"):
+        return
 
     # Quick check: do we even have any imported refs?
     try:
@@ -1282,7 +1246,10 @@ def _check_stashdb_matches_for_clusters(cluster_ids: set[int]) -> None:
         return
 
     # Read auto-link threshold from plugin settings (0 = disabled)
-    auto_link_threshold = _read_setting_float("stashdb_auto_link_threshold", 0.70)
+    try:
+        auto_link_threshold = float(_s.get("stashdb_auto_link_threshold", 0.70))
+    except (ValueError, TypeError):
+        auto_link_threshold = 0.70
 
     for cid in cluster_ids:
         try:
@@ -1388,17 +1355,33 @@ def _auto_link_cluster_to_stashdb(
             _log.debug("Could not look up local performer by stash_id", exc_info=True)
 
     # 3. If still not found, create a new performer in Stash
-    #    BUT only if the cluster meets minimum-appearance requirements.
-    #    This prevents 300k-scan bulk processing from creating thousands
-    #    of unidentified performers for faces seen only once or twice.
+    #    BUT only if auto-create is enabled and the cluster meets
+    #    minimum-appearance requirements.
     if local_pid is None:
+        from stash_ai_server.plugin_runtime.settings_registry import load_plugin_settings
+        _s = load_plugin_settings("skier_aitagging")
+
+        if str(_s.get("stashdb_auto_create_performers", "true")).strip().lower() in ("0", "false", "no", "off"):
+            _log.debug(
+                "Auto-link: skipping performer creation for cluster %d — "
+                "stashdb_auto_create_performers is disabled",
+                cluster_id,
+            )
+            return
+
         from stash_ai_server.db.detection_store import get_entity_count_by_type
         counts = get_entity_count_by_type(cluster_id)
         scene_count = counts.get("scene_count", 0)
         image_count = counts.get("image_count", 0)
 
-        min_scenes = _read_setting_int("face_auto_create_min_scenes", 0)
-        min_images = _read_setting_int("face_auto_create_min_images", 0)
+        try:
+            min_scenes = int(float(_s.get("face_auto_create_min_scenes", 0)))
+        except (ValueError, TypeError):
+            min_scenes = 0
+        try:
+            min_images = int(float(_s.get("face_auto_create_min_images", 0)))
+        except (ValueError, TypeError):
+            min_images = 0
 
         # Gate: need at least min_scenes scenes OR min_images images.
         # If both thresholds are 0, always allow (backward-compatible).
