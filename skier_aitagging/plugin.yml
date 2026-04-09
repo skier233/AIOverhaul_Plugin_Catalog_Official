@@ -64,16 +64,11 @@ settings:
     type: boolean
     default: true
     description: Automatically tag scenes/images with identified performers after face processing
-  - key: face_match_auto_threshold
-    label: Face Auto-Match Threshold
+  - key: face_match_threshold
+    label: Face Match Threshold
     type: number
-    default: 0.50
-    description: "Minimum cosine similarity to automatically assign a face to an existing cluster (0.0-1.0). Lower = more merges, higher = stricter matching."
-  - key: face_match_review_threshold
-    label: Face Review Threshold
-    type: number
-    default: 0.40
-    description: "Minimum cosine similarity for a face to be considered a candidate match for review (0.0-1.0). Below this, faces create new clusters."
+    default: 0.55
+    description: "Minimum cosine similarity to assign a face to an existing cluster (0.0-1.0). Below this, faces create new clusters."
   - key: face_max_exemplars_per_cluster
     label: Max Exemplars Per Cluster
     type: number

@@ -143,3 +143,68 @@ class TrackCandidate(BaseModel):
     keyframes: Optional[List[Dict[str, Any]]] = None  # [{t, bbox}]
     embeddings: List[FrameEmbedding] = Field(default_factory=list)
     metadata: Optional[Dict[str, Any]] = None
+
+
+# ---------------------------------------------------------------------------
+# Audio embedding response types
+# ---------------------------------------------------------------------------
+
+
+class VisualFrameEmbedding(BaseModel):
+    """A single visual embedding captured at a specific frame."""
+    vector: List[float]
+    norm: float
+    dim: int
+    embedder: str
+    frame_index: float
+
+
+class VisualSection(BaseModel):
+    """A detected visual section with its centroid embedding."""
+    section_index: int
+    start_frame: float
+    end_frame: float
+    start_time: float
+    end_time: float
+    frame_count: int
+    centroid: List[float]
+    norm: float
+    dim: int
+    embedder: str
+
+
+class VisualEmbeddingResult(BaseModel):
+    """Extracted and sectioned visual embeddings for a scene."""
+    sections_dinov2: List[VisualSection] = []
+    sections_metaclip2: List[VisualSection] = []
+    overall_dinov2: Optional[VisualSection] = None
+    overall_metaclip2: Optional[VisualSection] = None
+    section_count: int = 0
+    frame_count: int = 0
+
+
+class AudioEmbeddingEntry(BaseModel):
+    """A single per-type centroid embedding from the audio pipeline."""
+    centroid: List[float]
+    norm: float
+    dim: int
+    window_count: int
+
+
+class AudioClassificationSummary(BaseModel):
+    """Summary statistics from the audio classification pipeline."""
+    windows_analyzed: int = 0
+    windows_kept: int = 0
+    rejected_music: int = 0
+    rejected_quiet: int = 0
+    type_distribution: Dict[str, int] = {}
+    duration_seconds: Dict[str, float] = {}
+    total_kept_duration_seconds: float = 0.0
+
+
+class AudioEmbeddingResult(BaseModel):
+    """Parsed result from the audio embedding pipeline (one scene)."""
+    embeddings: Dict[str, AudioEmbeddingEntry] = {}       # type -> centroid
+    overall_embedding: Optional[AudioEmbeddingEntry] = None
+    classification_summary: Optional[AudioClassificationSummary] = None
+    source: Optional[str] = None

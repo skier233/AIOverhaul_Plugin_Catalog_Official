@@ -2,12 +2,13 @@ import asyncio
 import logging
 from typing import Sequence
 from pydantic import TypeAdapter
-from .models import AIModelInfo, AIVideoResultV3, ImageResult, VideoServerResponse
+from .models import AIModelInfo, AIVideoResultV3, AudioEmbeddingResult, ImageResult, VideoServerResponse
 from stash_ai_server.services.base import RemoteServiceBase
 
 IMAGES_ENDPOINT = "/v3/process_images/"  # Batch endpoint - accepts multiple image paths
 SCENE_ENDPOINT = "/v3/process_video/"    # Single scene endpoint - processes one scene at a time
 ACTIVE_SCENE_MODELS = "/v3/current_ai_models/"
+AUDIO_ENDPOINT = "/v1/process_audio/"    # Audio embedding pipeline
 
 # Face-scan-only endpoints — detection + embedding without tag classification
 FACE_SCAN_IMAGES_ENDPOINT = "/v3/face_recognition/process_images/"
@@ -135,4 +136,44 @@ async def call_face_scan_video_api(
         raise
     except Exception as exc:  # noqa: BLE001
         _log.warning("face scan video API call failed for scene_path=%s: %s", scene_path, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Audio embedding endpoint
+# ---------------------------------------------------------------------------
+
+async def call_audio_api(
+    service: RemoteServiceBase,
+    scene_path: str,
+) -> AudioEmbeddingResult | None:
+    """Call the audio embedding pipeline for a single scene.
+
+    Returns parsed ``AudioEmbeddingResult`` or ``None`` on failure.
+    The AI model server endpoint accepts a list of paths but we send one
+    at a time in the scene-tagging flow.
+    """
+    try:
+        payload = {"paths": [scene_path]}
+        raw = await service.http.post(AUDIO_ENDPOINT, json=payload)
+        # Response shape: {"result": [{...}]}
+        if isinstance(raw, dict):
+            results = raw.get("result", [])
+        elif hasattr(raw, "json"):
+            results = raw.json().get("result", [])
+        else:
+            _log.warning("Unexpected audio API response type: %s", type(raw))
+            return None
+
+        if not results or not isinstance(results[0], dict):
+            return None
+        if "error" in results[0]:
+            _log.warning("Audio API returned error: %s", results[0]["error"])
+            return None
+
+        return AudioEmbeddingResult.model_validate(results[0])
+    except asyncio.CancelledError:  # pragma: no cover
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("audio API call failed for scene_path=%s: %s", scene_path, exc)
         return None

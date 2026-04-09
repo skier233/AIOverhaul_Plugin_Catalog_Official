@@ -54,8 +54,7 @@ class SkierAITaggingService(RemoteServiceBase):
         self.face_scan_frame_interval: float = 6.0
         # Face recognition settings
         self.auto_apply_performers: bool = True
-        self.face_match_auto_threshold: float = 0.50
-        self.face_match_review_threshold: float = 0.40
+        self.face_match_threshold: float = 0.55
         self.face_max_exemplars_per_cluster: int = 10
         self.face_max_embeddings_per_track: int = 10
         self.face_embedding_dedup_threshold: float = 0.85
@@ -84,8 +83,7 @@ class SkierAITaggingService(RemoteServiceBase):
 
         # Face recognition settings
         self.auto_apply_performers = _coerce_bool(cfg.get("auto_apply_performers"), True)
-        self.face_match_auto_threshold = float(cfg.get("face_match_auto_threshold", 0.50))
-        self.face_match_review_threshold = float(cfg.get("face_match_review_threshold", 0.40))
+        self.face_match_threshold = float(cfg.get("face_match_threshold", 0.55))
         self.face_max_exemplars_per_cluster = int(float(cfg.get("face_max_exemplars_per_cluster", 10)))
         self.face_max_embeddings_per_track = int(float(cfg.get("face_max_embeddings_per_track", 10)))
         self.face_embedding_dedup_threshold = float(cfg.get("face_embedding_dedup_threshold", 0.85))
@@ -341,6 +339,51 @@ class SkierAITaggingService(RemoteServiceBase):
     async def face_scan_scene_all(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
         ctx.selected_ids = await stash_api.get_all_scenes_async()
         return await logic.face_scan_scenes(self, ctx, params, task_record)
+
+    # ------------------------------------------------------------------
+    # Audio embedding actions (standalone audio analysis, no tagging)
+    # ------------------------------------------------------------------
+
+    @action(
+        id="skier.audio_embed.scene",
+        label="Audio Embed Scene",
+        description="Extract audio embeddings for a scene (speech, moan, breath)",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["scenes"], selection="single")],
+    )
+    async def audio_embed_scene_single(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.audio_embed_scenes(self, ctx, params, task_record)
+
+    @action(
+        id="skier.audio_embed.scene.selected",
+        label="Audio Embed Selected Scenes",
+        description="Extract audio embeddings for selected scenes",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["scenes"], selection="multi")],
+    )
+    async def audio_embed_scene_selected(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.audio_embed_scenes(self, ctx, params, task_record)
+
+    @action(
+        id="skier.audio_embed.scene.page",
+        label="Audio Embed Page Scenes",
+        description="Extract audio embeddings for every scene on the current page",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["scenes"], selection="page")],
+    )
+    async def audio_embed_scene_page(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.audio_embed_scenes(self, ctx, params, task_record)
+
+    @action(
+        id="skier.audio_embed.scene.all",
+        label="Audio Embed All Scenes",
+        description="Extract audio embeddings for every scene in the library",
+        result_kind="dialog",
+        contexts=[ContextRule(pages=["scenes"], selection="none")],
+    )
+    async def audio_embed_scene_all(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        ctx.selected_ids = await stash_api.get_all_scenes_async()
+        return await logic.audio_embed_scenes(self, ctx, params, task_record)
 
 def register():
     svc = SkierAITaggingService()

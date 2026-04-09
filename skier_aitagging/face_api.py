@@ -1189,6 +1189,159 @@ async def detach_cluster_from_scene(
     }
 
 
+@router.get("/images/{image_id}/faces")
+async def get_image_faces(
+    image_id: int,
+    db: Session = Depends(get_db),
+):
+    """Get unique face clusters detected in an image, with performer info."""
+    _require_plugin_active(db, PLUGIN_NAME)
+    tracks = get_entity_tracks("image", image_id)
+    cluster_ids: set[int] = set()
+    for t in tracks:
+        if t.label == "face" and t.cluster_id:
+            cluster_ids.add(t.cluster_id)
+    if not cluster_ids:
+        return {"faces": []}
+
+    clusters = get_clusters_by_ids(list(cluster_ids))
+    thumb_base = "/api/v1/plugins/skier_aitagging/faces/clusters"
+    result = []
+    for c in clusters:
+        if c.status == "merged_away":
+            continue
+        counts = get_entity_count_by_type(c.id)
+        result.append({
+            "id": c.id,
+            "label": c.label,
+            "status": c.status,
+            "performer_id": c.performer_id,
+            "sample_count": c.sample_count,
+            "quality_score": c.quality_score,
+            "scene_count": counts["scene_count"],
+            "image_count": counts["image_count"],
+            "thumbnail_url": f"{thumb_base}/{c.id}/thumbnail",
+        })
+    return {"faces": result}
+
+
+@router.post("/images/{image_id}/faces/{cluster_id}/detach")
+async def detach_cluster_from_image(
+    image_id: int,
+    cluster_id: int,
+    db: Session = Depends(get_db),
+):
+    """Detach a face cluster from a specific image ("Wrong person").
+
+    Mirrors the scene detach logic: moves embeddings and tracks for this
+    image from the original cluster into the best alternative or a new
+    cluster, recomputes centroids, and cascades performer removal.
+    """
+    _require_plugin_active(db, PLUGIN_NAME)
+    from stash_ai_server.models.detections import FaceEmbedding, DetectionTrack
+    from sqlalchemy import update, select
+    from stash_ai_server.db.detection_store import (
+        update_cluster_centroid, create_cluster, find_nearest_cluster,
+        _recompute_exemplars,
+    )
+
+    cluster = get_cluster_by_id(cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    performer_id = cluster.performer_id
+    entities_before = set(get_cluster_entity_pairs(cluster_id))
+
+    detached_embs = 0
+    detached_tracks = 0
+    new_cluster_id: int | None = None
+
+    with get_session_local()() as session:
+        emb_rows = session.execute(
+            select(FaceEmbedding.id, FaceEmbedding.embedding)
+            .where(
+                FaceEmbedding.cluster_id == cluster_id,
+                FaceEmbedding.entity_type == "image",
+                FaceEmbedding.entity_id == image_id,
+            )
+        ).fetchall()
+
+        if not emb_rows:
+            return {"detached_embeddings": 0, "detached_tracks": 0}
+
+        import numpy as np
+        vectors = [list(row[1]) for row in emb_rows if row[1] is not None]
+        mean_vec = np.mean(vectors, axis=0).tolist() if vectors else None
+
+        best_target_id: int | None = None
+        REASSIGN_THRESHOLD = 0.72
+        if mean_vec is not None:
+            candidates = find_nearest_cluster(
+                mean_vec,
+                exclude_statuses=("merged_away",),
+                limit=5,
+            )
+            for cid, sim in candidates:
+                if cid != cluster_id and sim >= REASSIGN_THRESHOLD:
+                    best_target_id = cid
+                    break
+
+        if best_target_id is None:
+            new = create_cluster(session, status="unidentified")
+            session.flush()
+            best_target_id = new.id
+            new_cluster_id = new.id
+
+        result = session.execute(
+            update(FaceEmbedding)
+            .where(
+                FaceEmbedding.cluster_id == cluster_id,
+                FaceEmbedding.entity_type == "image",
+                FaceEmbedding.entity_id == image_id,
+            )
+            .values(cluster_id=best_target_id, is_exemplar=False)
+        )
+        detached_embs = result.rowcount
+
+        result = session.execute(
+            update(DetectionTrack)
+            .where(
+                DetectionTrack.cluster_id == cluster_id,
+                DetectionTrack.entity_type == "image",
+                DetectionTrack.entity_id == image_id,
+            )
+            .values(cluster_id=best_target_id)
+        )
+        detached_tracks = result.rowcount
+        session.commit()
+
+    if detached_embs > 0:
+        update_cluster_centroid(cluster_id)
+        _recompute_exemplars(cluster_id)
+        update_cluster_centroid(best_target_id)
+        _recompute_exemplars(best_target_id)
+
+    performers_removed = 0
+    if performer_id and detached_embs > 0:
+        performers_removed = _cascade_performer_unassignment(
+            cluster_id, performer_id, entities_before,
+        )
+
+    _log.info(
+        "Detached cluster %d from image %d: %d embeddings, %d tracks → "
+        "target cluster %d (new=%s), performers_removed=%d",
+        cluster_id, image_id, detached_embs, detached_tracks,
+        best_target_id, new_cluster_id is not None, performers_removed,
+    )
+    return {
+        "detached_embeddings": detached_embs,
+        "detached_tracks": detached_tracks,
+        "new_cluster_id": new_cluster_id,
+        "target_cluster_id": best_target_id,
+        "performers_removed": performers_removed,
+    }
+
+
 @router.delete("/clusters/{cluster_id}/exemplars/{embedding_id}")
 async def delete_cluster_exemplar(
     cluster_id: int,
@@ -3958,9 +4111,9 @@ async def get_cluster_diagnostics(
       High values (>0.90) mean tight, confident clusters.
       Low values (<0.70) may indicate a cluster contains multiple people.
     - **Inter-cluster nearest-neighbor similarity**: how close clusters are to each other.
-      Values near or above ``auto_threshold`` indicate clusters that might merge during
+      Values near or above ``match_threshold`` indicate clusters that might merge during
       the next scan.
-    - **Threshold simulation**: at a given ``auto_threshold``, how many unidentified
+    - **Threshold simulation**: at a given ``match_threshold``, how many unidentified
       clusters would absorb into an existing cluster instead of creating a new one.
     - **StashDB match score distribution**: where your existing matches fall.
     - **Co-occurrence confidence distribution**: how often the top suggested performer
@@ -4134,7 +4287,7 @@ async def get_cluster_diagnostics(
             "nearest_neighbors": sorted(nn_pairs, key=lambda x: x["similarity"], reverse=True)[:50],
             "threshold_simulation": [
                 {
-                    "auto_threshold": float(t),
+                    "match_threshold": float(t),
                     "cluster_pairs_would_overlap": count,
                     "note": "pairs whose centroids are >= threshold (candidates to merge during scan)",
                 }
@@ -4382,28 +4535,15 @@ def _compute_reference_profile(
             "basis": basis,
         }
 
-    # ---- Cluster matching thresholds ----
+    # ---- Cluster matching threshold ----
     id_intra_p5 = id_stats["intra_similarity"]["p5"]
-    id_intra_median = id_stats["intra_similarity"]["median"]
 
     if id_intra_p5 is not None:
         suggested = round(float(id_intra_p5) * 0.75, 2)
         suggested = max(0.25, min(0.50, suggested))
-        recommendations["face_match_review_threshold"] = {
+        recommendations["face_match_threshold"] = {
             "suggested": suggested,
             "basis": f"p5 of identified intra_similarity = {id_intra_p5}, scaled to 75% and clamped [0.25, 0.50]",
-        }
-
-    review_sugg = recommendations.get("face_match_review_threshold", {}).get("suggested")
-    if id_intra_median is not None and review_sugg is not None:
-        suggested = round((float(review_sugg) + float(id_intra_median)) / 2, 2)
-        suggested = max(0.35, min(0.60, suggested))
-        recommendations["face_match_auto_threshold"] = {
-            "suggested": suggested,
-            "basis": (
-                f"midpoint of review_threshold ({review_sugg}) and "
-                f"identified intra_similarity median ({id_intra_median}), clamped [0.35, 0.60]"
-            ),
         }
 
     # ---- Curation progress ----

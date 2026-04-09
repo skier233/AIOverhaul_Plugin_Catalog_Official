@@ -20,6 +20,7 @@ from .stash_handler import (
 )
 from .http_handler import call_images_api, call_scene_api, get_active_scene_models
 from .http_handler import call_face_scan_images_api, call_face_scan_video_api
+from .http_handler import call_audio_api
 from .utils import (
     collect_image_tag_records,
     extract_tags_from_response,
@@ -59,6 +60,7 @@ from stash_ai_server.db.ai_results_store import (
     purge_scene_categories,
 )
 from stash_ai_server.db.detection_store import cleanup_stale_detections_async
+from stash_ai_server.db.embedding_store import store_scene_embeddings_batch_async
 import csv
 import logging
 from .http_handler import get_active_scene_models
@@ -376,8 +378,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                             parsed=parsed_image,
                             classifier=classifier,
                             auto_apply_performers=service.auto_apply_performers,
-                            auto_threshold=service.face_match_auto_threshold,
-                            review_threshold=service.face_match_review_threshold,
+                            match_threshold=service.face_match_threshold,
                             max_exemplars=service.face_max_exemplars_per_cluster,
                             dedup_threshold=service.face_embedding_dedup_threshold,
                             min_embedding_norm=service.face_min_embedding_norm,
@@ -407,6 +408,35 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                                     _agg_matched_cluster_ids.append(cid)
                     except Exception:
                         _log.exception("Failed to process detections for image %s", image_id)
+
+                # --- Visual embedding extraction & storage ---
+                try:
+                    visual_records = _extract_image_visual_embeddings(
+                        payload if isinstance(payload, dict) else {}
+                    )
+                    if visual_records and run_id is not None:
+                        from stash_ai_server.db.embedding_store import (
+                            store_scene_embeddings_batch_async,
+                            delete_entity_embeddings_by_prefix_async,
+                        )
+                        for prefix in ("visual_dinov3_section_", "visual_metaclip2_section_"):
+                            await delete_entity_embeddings_by_prefix_async(
+                                entity_type="image",
+                                entity_id=image_id,
+                                embedding_type_prefix=prefix,
+                            )
+                        await store_scene_embeddings_batch_async(
+                            entity_type="image",
+                            entity_id=image_id,
+                            embeddings=visual_records,
+                            run_id=run_id,
+                        )
+                        _log.debug(
+                            "Image %s: stored %d visual embedding(s)",
+                            image_id, len(visual_records),
+                        )
+                except Exception:
+                    _log.exception("Failed to store visual embeddings for image %s", image_id)
 
     tags_added_counts: dict[int, int] = {}
 
@@ -493,6 +523,385 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
             "matched_cluster_ids": _agg_matched_cluster_ids,
         } if (_agg_faces_new or _agg_faces_matched) else None,
     }
+
+
+# ==============================================================================
+# Audio embedding helpers
+# ==============================================================================
+
+
+def _build_audio_embedding_records(audio_result) -> list[dict]:
+    """Convert an AudioEmbeddingResult into a list of dicts for embedding_store."""
+    from .models import AudioEmbeddingResult
+    if not isinstance(audio_result, AudioEmbeddingResult):
+        return []
+
+    records: list[dict] = []
+    summary = audio_result.classification_summary
+
+    # Per-type embeddings (moan, speech, breath)
+    for type_name, entry in audio_result.embeddings.items():
+        dur = (summary.duration_seconds.get(type_name, 0.0)) if summary else 0.0
+        records.append({
+            "embedding_type": f"audio_{type_name}",
+            "embedding": entry.centroid,
+            "dim": entry.dim,
+            "embedder": "ecapa_tdnn",
+            "norm": entry.norm,
+            "sample_count": entry.window_count,
+            "metadata": {
+                "window_count": entry.window_count,
+                "duration_seconds": dur,
+            },
+        })
+
+    return records
+
+
+# ---------------------------------------------------------------------------
+# Visual embedding extraction & sectioning
+# ---------------------------------------------------------------------------
+
+# Category keys emitted by the AI model server visual embedding models
+_VISUAL_EMB_DINOV2 = "visual_embeddings_dinov3"
+_VISUAL_EMB_METACLIP2 = "visual_embeddings_metaclip2"
+
+
+def _extract_visual_embeddings(
+    raw_frames: list[dict],
+) -> tuple[list[tuple[float, list[float], float, int, str]], list[tuple[float, list[float], float, int, str]]]:
+    """Pull per-frame visual embedding vectors from the raw video response frames.
+
+    Returns two parallel lists (dinov3, metaclip2) of tuples:
+        (frame_index, vector, norm, dim, embedder)
+    sorted by frame_index.
+    """
+    dinov3: list[tuple[float, list[float], float, int, str]] = []
+    metaclip2: list[tuple[float, list[float], float, int, str]] = []
+
+    for frame in raw_frames:
+        if not isinstance(frame, dict):
+            continue
+        fi = float(frame.get("frame_index", 0.0))
+
+        for key, dest in [(_VISUAL_EMB_DINOV2, dinov3), (_VISUAL_EMB_METACLIP2, metaclip2)]:
+            entries = frame.get(key)
+            if not entries or not isinstance(entries, list):
+                continue
+            entry = entries[0]
+            if not isinstance(entry, dict) or "vector" not in entry:
+                continue
+            dest.append((
+                fi,
+                entry["vector"],
+                float(entry.get("norm", 0.0)),
+                int(entry.get("dim", len(entry["vector"]))),
+                str(entry.get("embedder", key)),
+            ))
+
+    dinov3.sort(key=lambda x: x[0])
+    metaclip2.sort(key=lambda x: x[0])
+    return dinov3, metaclip2
+
+
+def _extract_image_visual_embeddings(payload: dict) -> list[dict]:
+    """Extract visual embedding records from a single image API response.
+
+    Images produce one embedding per model (not sectioned like video).
+    The embedding keys sit at the top level of the payload dict.
+    Returns a list of embedding store records ready for storage.
+    """
+    records: list[dict] = []
+    for key, emb_type_prefix in [
+        (_VISUAL_EMB_DINOV2, "visual_dinov3_section_0"),
+        (_VISUAL_EMB_METACLIP2, "visual_metaclip2_section_0"),
+    ]:
+        entries = payload.get(key)
+        if not entries or not isinstance(entries, list):
+            continue
+        entry = entries[0]
+        if not isinstance(entry, dict) or "vector" not in entry:
+            continue
+        vec = entry["vector"]
+        norm = float(entry.get("norm", 0.0))
+        dim = int(entry.get("dim", len(vec)))
+        embedder = str(entry.get("embedder", key))
+        records.append({
+            "embedding_type": emb_type_prefix,
+            "embedding": vec,
+            "dim": dim,
+            "embedder": embedder,
+            "norm": norm,
+            "sample_count": 1,
+            "metadata": {},
+        })
+    return records
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    import math
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _l2_normalize(vec: list[float]) -> tuple[list[float], float]:
+    """L2-normalize a vector, returning (normalized, norm)."""
+    import math
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm == 0:
+        return vec, 0.0
+    return [x / norm for x in vec], norm
+
+
+def _compute_visual_sections(
+    frame_embeddings: list[tuple[float, list[float], float, int, str]],
+    frame_interval: float,
+    *,
+    similarity_threshold: float = 0.70,
+) -> list[dict]:
+    """Detect visual sections by finding drops in cosine similarity.
+
+    Each section gets a centroid (L2-normalized mean of its frame embeddings).
+    Returns a list of section dicts ready for storage.
+    """
+    from .models import VisualSection
+
+    if not frame_embeddings:
+        return []
+
+    # Find section boundaries — indices where a new section STARTS
+    boundaries = [0]
+    for i in range(1, len(frame_embeddings)):
+        sim = _cosine_similarity(frame_embeddings[i - 1][1], frame_embeddings[i][1])
+        if sim < similarity_threshold:
+            boundaries.append(i)
+
+    sections: list[dict] = []
+    dim = frame_embeddings[0][3]
+    embedder = frame_embeddings[0][4]
+
+    for sec_idx, start in enumerate(boundaries):
+        end = boundaries[sec_idx + 1] if sec_idx + 1 < len(boundaries) else len(frame_embeddings)
+        section_frames = frame_embeddings[start:end]
+
+        # Compute centroid as mean of all frame vectors, then L2-normalize
+        centroid = [0.0] * dim
+        for _, vec, _, _, _ in section_frames:
+            for j, v in enumerate(vec):
+                centroid[j] += v
+        n = len(section_frames)
+        centroid = [c / n for c in centroid]
+        centroid, norm = _l2_normalize(centroid)
+
+        start_frame = section_frames[0][0]
+        end_frame = section_frames[-1][0]
+
+        sections.append(VisualSection(
+            section_index=sec_idx,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            start_time=start_frame * frame_interval,
+            end_time=end_frame * frame_interval,
+            frame_count=n,
+            centroid=centroid,
+            norm=norm,
+            dim=dim,
+            embedder=embedder,
+        ))
+
+    return sections
+
+
+def _build_visual_embedding_records(
+    sections_dinov3: list,
+    sections_metaclip2: list,
+) -> list[dict]:
+    """Convert visual sections into embedding store records."""
+    records: list[dict] = []
+
+    for section in sections_dinov3:
+        records.append({
+            "embedding_type": f"visual_dinov3_section_{section.section_index}",
+            "embedding": section.centroid,
+            "dim": section.dim,
+            "embedder": section.embedder,
+            "norm": section.norm,
+            "sample_count": section.frame_count,
+            "start_time": section.start_time,
+            "end_time": section.end_time,
+            "metadata": {
+                "section_index": section.section_index,
+                "start_frame": section.start_frame,
+                "end_frame": section.end_frame,
+            },
+        })
+
+    for section in sections_metaclip2:
+        records.append({
+            "embedding_type": f"visual_metaclip2_section_{section.section_index}",
+            "embedding": section.centroid,
+            "dim": section.dim,
+            "embedder": section.embedder,
+            "norm": section.norm,
+            "sample_count": section.frame_count,
+            "start_time": section.start_time,
+            "end_time": section.end_time,
+            "metadata": {
+                "section_index": section.section_index,
+                "start_frame": section.start_frame,
+                "end_frame": section.end_frame,
+            },
+        })
+
+    return records
+
+
+def _process_visual_embeddings(
+    raw_frames: list[dict] | None,
+    frame_interval: float,
+    *,
+    similarity_threshold: float = 0.70,
+    scene_duration: float = 0.0,
+    min_section_fraction: float = 0.05,
+):
+    """Extract, section, and prepare visual embeddings from raw video frames.
+
+    Sections shorter than ``min_section_fraction`` of ``scene_duration`` are
+    dropped before storage (default 5 %).  Pass ``scene_duration=0`` to disable.
+
+    Returns (visual_records, visual_result_data) tuple.
+    """
+    from .models import VisualEmbeddingResult, VisualSection
+
+    if not raw_frames:
+        return [], None
+
+    dinov3_frames, metaclip2_frames = _extract_visual_embeddings(raw_frames)
+
+    if not dinov3_frames and not metaclip2_frames:
+        return [], None
+
+    # Use DINOv3 for section boundary detection (it's L2-normalized)
+    # then apply the same boundaries to MetaCLIP2
+    sections_dinov3 = _compute_visual_sections(
+        dinov3_frames, frame_interval, similarity_threshold=similarity_threshold,
+    )
+    # Apply DINOv3 section boundaries to MetaCLIP2
+    if sections_dinov3 and metaclip2_frames:
+        # Build boundary frame indices from DINOv3 sections
+        boundary_frames = [s.start_frame for s in sections_dinov3]
+        sections_metaclip2 = _apply_section_boundaries(
+            metaclip2_frames, boundary_frames, frame_interval,
+        )
+    else:
+        sections_metaclip2 = _compute_visual_sections(
+            metaclip2_frames, frame_interval, similarity_threshold=similarity_threshold,
+        )
+
+    # Drop sections that are too short relative to the total scene duration.
+    # A section's duration is (end_time - start_time + frame_interval) but we
+    # use the simpler frame_count-based check: section must cover at least
+    # min_section_fraction of the total frames derived from scene_duration.
+    if scene_duration > 0 and min_section_fraction > 0:
+        min_duration = scene_duration * min_section_fraction
+        sections_dinov3 = [
+            s for s in sections_dinov3
+            if (s.end_time - s.start_time + frame_interval) >= min_duration
+        ]
+        sections_metaclip2 = [
+            s for s in sections_metaclip2
+            if (s.end_time - s.start_time + frame_interval) >= min_duration
+        ]
+
+    # Re-index surviving sections so embedding_type names are sequential (0, 1, 2…)
+    for new_idx, s in enumerate(sections_dinov3):
+        s.section_index = new_idx
+    for new_idx, s in enumerate(sections_metaclip2):
+        s.section_index = new_idx
+
+    records = _build_visual_embedding_records(
+        sections_dinov3, sections_metaclip2,
+    )
+
+    result_data = {
+        "sections_dinov3": len(sections_dinov3),
+        "sections_metaclip2": len(sections_metaclip2),
+        "frames_dinov3": len(dinov3_frames),
+        "frames_metaclip2": len(metaclip2_frames),
+        "embedding_types": [r["embedding_type"] for r in records],
+    }
+
+    return records, result_data
+
+
+def _apply_section_boundaries(
+    frame_embeddings: list[tuple[float, list[float], float, int, str]],
+    boundary_frames: list[float],
+    frame_interval: float,
+) -> list:
+    """Apply pre-computed section boundaries to a set of frame embeddings.
+
+    Used to apply DINOv3-detected boundaries to MetaCLIP2 embeddings.
+    """
+    from .models import VisualSection
+
+    if not frame_embeddings or not boundary_frames:
+        return _compute_visual_sections(frame_embeddings, frame_interval, similarity_threshold=0.0)
+
+    # Assign each frame to a section based on boundary frames
+    sections_data: list[list[tuple[float, list[float], float, int, str]]] = []
+    boundary_idx = 0
+    current_section: list[tuple[float, list[float], float, int, str]] = []
+
+    for frame in frame_embeddings:
+        fi = frame[0]
+        # Check if we've crossed into the next section
+        if boundary_idx + 1 < len(boundary_frames) and fi >= boundary_frames[boundary_idx + 1]:
+            if current_section:
+                sections_data.append(current_section)
+            current_section = []
+            boundary_idx += 1
+        current_section.append(frame)
+
+    if current_section:
+        sections_data.append(current_section)
+
+    # Build sections
+    sections: list = []
+    dim = frame_embeddings[0][3]
+    embedder = frame_embeddings[0][4]
+
+    for sec_idx, section_frames in enumerate(sections_data):
+        centroid = [0.0] * dim
+        for _, vec, _, _, _ in section_frames:
+            for j, v in enumerate(vec):
+                centroid[j] += v
+        n = len(section_frames)
+        centroid = [c / n for c in centroid]
+        centroid, norm = _l2_normalize(centroid)
+
+        start_frame = section_frames[0][0]
+        end_frame = section_frames[-1][0]
+
+        sections.append(VisualSection(
+            section_index=sec_idx,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            start_time=start_frame * frame_interval,
+            end_time=end_frame * frame_interval,
+            frame_count=n,
+            centroid=centroid,
+            norm=norm,
+            dim=dim,
+            embedder=embedder,
+        ))
+
+    return sections
 
 
 # ==============================================================================
@@ -780,8 +1189,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
                     frame_interval=result.frame_interval,
                     classifier=frame_classifier,
                     auto_apply_performers=service.auto_apply_performers,
-                    auto_threshold=service.face_match_auto_threshold,
-                    review_threshold=service.face_match_review_threshold,
+                    match_threshold=service.face_match_threshold,
                     max_exemplars=service.face_max_exemplars_per_cluster,
                     max_embeddings_per_track=service.face_max_embeddings_per_track,
                     dedup_threshold=service.face_embedding_dedup_threshold,
@@ -812,6 +1220,84 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             except Exception:
                 _log.exception("Failed to process detections for scene %s", scene_id)
 
+        # --- Audio embedding processing ---
+        audio_summary_parts: list[str] = []
+        audio_result_data: dict | None = None
+        try:
+            audio_result = await call_audio_api(service, remote_scene_path)
+            if audio_result is not None:
+                emb_records = _build_audio_embedding_records(audio_result)
+                if emb_records:
+                    stored_ids = await store_scene_embeddings_batch_async(
+                        entity_type="scene",
+                        entity_id=scene_id,
+                        embeddings=emb_records,
+                        run_id=run_id,
+                    )
+                    _log.debug(
+                        "Scene %s: stored %d audio embedding(s) (ids=%s)",
+                        scene_id, len(stored_ids), stored_ids,
+                    )
+                    summary = audio_result.classification_summary
+                    dur = summary.duration_seconds if summary else {}
+                    audio_msg = (
+                        f"Audio: {len(emb_records)} embedding type(s) stored"
+                    )
+                    if dur:
+                        dur_parts = [f"{k}={v:.1f}s" for k, v in dur.items()]
+                        audio_msg += f" ({', '.join(dur_parts)})"
+                    audio_summary_parts.append(audio_msg)
+                    audio_result_data = {
+                        "embedding_types": [r["embedding_type"] for r in emb_records],
+                        "duration_seconds": dur,
+                        "total_kept_duration_seconds": summary.total_kept_duration_seconds if summary else 0.0,
+                        "windows_kept": summary.windows_kept if summary else 0,
+                    }
+        except Exception:
+            _log.exception("Failed to process audio embeddings for scene %s", scene_id)
+
+        # --- Visual embedding processing ---
+        visual_summary_parts: list[str] = []
+        visual_result_data: dict | None = None
+        try:
+            visual_records, visual_result_data = _process_visual_embeddings(
+                result.frames,
+                result.frame_interval,
+                scene_duration=scene_duration,
+            )
+            if visual_records and run_id is not None:
+                # Clean up old visual section embeddings before storing new ones
+                # (section count may differ between runs)
+                from stash_ai_server.db.embedding_store import delete_entity_embeddings_by_prefix_async
+                for prefix in ("visual_dinov3_section_", "visual_metaclip2_section_"):
+                    await delete_entity_embeddings_by_prefix_async(
+                        entity_type="scene",
+                        entity_id=scene_id,
+                        embedding_type_prefix=prefix,
+                    )
+                visual_stored_ids = await store_scene_embeddings_batch_async(
+                    entity_type="scene",
+                    entity_id=scene_id,
+                    embeddings=visual_records,
+                    run_id=run_id,
+                )
+                _log.debug(
+                    "Scene %s: stored %d visual embedding(s) (ids=%s)",
+                    scene_id, len(visual_stored_ids), visual_stored_ids,
+                )
+                section_count = (
+                    visual_result_data.get("sections_dinov3", 0)
+                    + visual_result_data.get("sections_metaclip2", 0)
+                )
+                visual_msg = (
+                    f"Visual: {len(visual_records)} embedding(s) stored "
+                    f"({visual_result_data.get('sections_dinov3', 0)} DINOv3 sections, "
+                    f"{visual_result_data.get('sections_metaclip2', 0)} MetaCLIP2 sections)"
+                )
+                visual_summary_parts.append(visual_msg)
+        except Exception:
+            _log.exception("Failed to process visual embeddings for scene %s", scene_id)
+
         (
             markers_by_tag,
             tag_changes,
@@ -832,6 +1318,8 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         if removed_tags:
             summary_parts.append(f"removed {removed_tags} scene tag(s)")
         summary_parts.extend(face_summary_parts)
+        summary_parts.extend(audio_summary_parts)
+        summary_parts.extend(visual_summary_parts)
 
         if force_reprocess:
             await remove_reprocess_tag_from_scene(scene_id)
@@ -848,6 +1336,8 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             "processed_ids": [scene_id],
             "failed_ids": [],
             "face_summary": face_result_data,
+            "audio_summary": audio_result_data,
+            "visual_summary": visual_result_data,
         }
     except Exception as exc:
         _log.exception("Scene tagging failed for scene_id=%s", scene_id)
@@ -1208,8 +1698,7 @@ async def face_scan_images_task(ctx: ContextInput, params: dict) -> dict:
                             parsed=parsed_image,
                             classifier=classifier,
                             auto_apply_performers=service.auto_apply_performers,
-                            auto_threshold=service.face_match_auto_threshold,
-                            review_threshold=service.face_match_review_threshold,
+                            match_threshold=service.face_match_threshold,
                             max_exemplars=service.face_max_exemplars_per_cluster,
                             dedup_threshold=service.face_embedding_dedup_threshold,
                             min_embedding_norm=service.face_min_embedding_norm,
@@ -1430,8 +1919,7 @@ async def face_scan_scene_task(ctx: ContextInput, params: dict, task_record: Tas
                 frame_interval=result.frame_interval,
                 classifier=frame_classifier,
                 auto_apply_performers=service.auto_apply_performers,
-                auto_threshold=service.face_match_auto_threshold,
-                review_threshold=service.face_match_review_threshold,
+                match_threshold=service.face_match_threshold,
                 max_exemplars=service.face_max_exemplars_per_cluster,
                 max_embeddings_per_track=service.face_max_embeddings_per_track,
                 dedup_threshold=service.face_embedding_dedup_threshold,
@@ -1806,3 +2294,188 @@ def update_tag_settings(tag_settings: dict) -> dict:
     
     tag_config_obj.update_tag_settings(settings_map)
     return {'status': 'ok', 'updated': len(tag_settings)}
+
+
+# ==============================================================================
+# Standalone audio embedding actions
+# ==============================================================================
+
+@task_handler(id="skier.audio_embed.scene.task")
+async def audio_embed_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecord) -> dict:
+    """Process audio embeddings for a single scene (no tagging)."""
+    scene_id_raw = ctx.entity_id
+    if scene_id_raw is None:
+        raise ValueError("Context missing scene entity_id. ctx: %s" % ctx)
+    try:
+        scene_id = int(scene_id_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid scene_id: {scene_id_raw}") from exc
+
+    service = params["service"]
+    try:
+        scene_path, scene_tags, scene_duration = await _with_stash_timeout(
+            stash_api.get_scene_path_and_tags_and_duration_async(scene_id),
+            "get_scene_path_and_tags_and_duration",
+        )
+    except Exception as exc:
+        _log.exception("Failed to load scene metadata for scene_id=%s", scene_id)
+        detail = _short_error(str(exc) or exc.__class__.__name__)
+        return {
+            "scene_id": scene_id,
+            "status": "failed",
+            "message": f"Scene #{scene_id}: audio embedding failed ({detail}).",
+            "processed_ids": [scene_id],
+            "failed_ids": [scene_id],
+        }
+
+    remote_scene_path = mutate_path_for_plugin(scene_path or "", service.plugin_name)
+
+    try:
+        audio_result = await call_audio_api(service, remote_scene_path)
+    except Exception as exc:
+        _log.exception("Audio API call failed for scene_id=%s", scene_id)
+        detail = _short_error(str(exc) or exc.__class__.__name__)
+        return {
+            "scene_id": scene_id,
+            "status": "failed",
+            "message": f"Scene #{scene_id}: audio embedding failed ({detail}).",
+            "processed_ids": [scene_id],
+            "failed_ids": [scene_id],
+        }
+
+    if audio_result is None:
+        return {
+            "scene_id": scene_id,
+            "status": "failed",
+            "message": f"Scene #{scene_id}: audio pipeline returned no data.",
+            "processed_ids": [scene_id],
+            "failed_ids": [scene_id],
+        }
+
+    emb_records = _build_audio_embedding_records(audio_result)
+    if not emb_records:
+        return {
+            "scene_id": scene_id,
+            "status": "success",
+            "message": f"Scene #{scene_id}: no audio embeddings extracted (possibly no vocal content).",
+            "processed_ids": [scene_id],
+            "failed_ids": [],
+            "audio_summary": None,
+        }
+
+    try:
+        stored_ids = await store_scene_embeddings_batch_async(
+            entity_type="scene",
+            entity_id=scene_id,
+            embeddings=emb_records,
+            run_id=None,
+        )
+    except Exception as exc:
+        _log.exception("Failed to store audio embeddings for scene_id=%s", scene_id)
+        detail = _short_error(str(exc) or exc.__class__.__name__)
+        return {
+            "scene_id": scene_id,
+            "status": "failed",
+            "message": f"Scene #{scene_id}: audio embedding storage failed ({detail}).",
+            "processed_ids": [scene_id],
+            "failed_ids": [scene_id],
+        }
+
+    summary = audio_result.classification_summary
+    dur = summary.duration_seconds if summary else {}
+    dur_parts = [f"{k}={v:.1f}s" for k, v in dur.items()] if dur else []
+    dur_str = f" ({', '.join(dur_parts)})" if dur_parts else ""
+
+    message = (
+        f"Scene #{scene_id}: {len(emb_records)} audio embedding(s) stored{dur_str}."
+    )
+    _log.info(message)
+
+    return {
+        "action_type": "audio_embed",
+        "scene_id": scene_id,
+        "status": "success",
+        "message": message,
+        "processed_ids": [scene_id],
+        "failed_ids": [],
+        "audio_summary": {
+            "embedding_types": [r["embedding_type"] for r in emb_records],
+            "duration_seconds": dur,
+            "total_kept_duration_seconds": summary.total_kept_duration_seconds if summary else 0.0,
+            "windows_kept": summary.windows_kept if summary else 0,
+        },
+    }
+
+
+async def audio_embed_scenes(service: RemoteServiceBase, ctx: ContextInput, params: dict, task_record: TaskRecord):
+    """Controller for multi-scene audio embedding. Spawns chunked child tasks."""
+    selected_items = get_selected_items(ctx)
+    params["service"] = service
+    if not selected_items:
+        return {
+            "status": "noop",
+            "message": "No scenes to process.",
+            "scenes_requested": 0,
+            "scenes_completed": 0,
+            "scenes_failed": 0,
+        }
+    if len(selected_items) == 1:
+        if not ctx.entity_id:
+            ctx.entity_id = str(selected_items[0])
+        return await audio_embed_scene_task(ctx, params, task_record)
+
+    task_priority = TaskPriority.low
+    if ctx.is_detail_view:
+        task_priority = TaskPriority.high
+    elif ctx.selected_ids and len(ctx.selected_ids) >= 1:
+        task_priority = TaskPriority.normal
+    elif ctx.visible_ids and len(ctx.visible_ids) >= 1:
+        task_priority = TaskPriority.normal
+
+    spawn_result = await spawn_chunked_tasks(
+        parent_task=task_record,
+        parent_context=ctx,
+        handler=audio_embed_scene_task,
+        items=selected_items,
+        chunk_size=1,
+        params=params,
+        priority=task_priority,
+        hold_children=True,
+    )
+    child_ids = spawn_result.get("spawned", [])
+    success = 0
+    failed = 0
+    for child_id in child_ids:
+        child = task_manager.get(child_id)
+        if child is None:
+            continue
+        if child.status == TaskStatus.failed:
+            failed += 1
+            continue
+        child_result = getattr(child, "result", None)
+        if isinstance(child_result, dict) and child_result.get("status") == "failed":
+            failed += 1
+        else:
+            success += 1
+
+    total_requested = len(selected_items)
+    accounted = success + failed
+    if accounted < len(child_ids):
+        failed += len(child_ids) - accounted
+    if accounted < total_requested:
+        failed += total_requested - accounted
+
+    failed = min(failed, total_requested)
+    success = max(total_requested - failed, 0)
+
+    status = "success"
+    if failed:
+        status = "failed" if success == 0 else "partial"
+
+    return {
+        "status": status,
+        "message": f"Audio embeddings: {success}/{total_requested} scene(s) processed, {failed} failed.",
+        "scenes_requested": total_requested,
+        "scenes_completed": success,
+        "scenes_failed": failed,
+    }

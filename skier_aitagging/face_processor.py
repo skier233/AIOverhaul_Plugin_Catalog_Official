@@ -59,8 +59,7 @@ DEFAULT_KEYFRAME_IOU_THRESHOLD = 0.80
 DEFAULT_MAX_TRACK_GAP_FRAMES = 3
 DEFAULT_DEDUP_THRESHOLD = 0.85
 DEFAULT_MAX_EMBEDDINGS_PER_TRACK = 10
-DEFAULT_AUTO_THRESHOLD = 0.50
-DEFAULT_REVIEW_THRESHOLD = 0.40
+DEFAULT_MATCH_THRESHOLD = 0.40
 DEFAULT_MAX_EXEMPLARS = 10
 # Quality floor: minimum thresholds for an embedding to be used as an
 # exemplar or to seed a new cluster.  Below-quality faces can still be
@@ -428,8 +427,7 @@ def _match_local_centroids(
     embedding_vec: np.ndarray,
     local_centroids: dict[int, np.ndarray],
     *,
-    auto_threshold: float,
-    review_threshold: float,
+    match_threshold: float,
 ) -> tuple[int | None, float, str]:
     """Match against in-memory centroids built during the current batch.
 
@@ -448,11 +446,8 @@ def _match_local_centroids(
             best_sim = dot
             best_cid = cid
 
-    if best_cid is not None:
-        if best_sim >= auto_threshold:
-            return best_cid, best_sim, "auto"
-        if best_sim >= review_threshold:
-            return best_cid, best_sim, "review"
+    if best_cid is not None and best_sim >= match_threshold:
+        return best_cid, best_sim, "matched"
 
     return None, best_sim if best_cid is not None else 0.0, "new"
 
@@ -460,8 +455,7 @@ def _match_local_centroids(
 def match_to_cluster(
     embedding_vec: np.ndarray,
     *,
-    auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
-    review_threshold: float = DEFAULT_REVIEW_THRESHOLD,
+    match_threshold: float = DEFAULT_MATCH_THRESHOLD,
     local_centroids: dict[int, np.ndarray] | None = None,
 ) -> tuple[int | None, float, str]:
     """Match an embedding to the nearest face cluster.
@@ -470,14 +464,13 @@ def match_to_cluster(
     batch), then falls back to the DB-level pgvector search.
 
     Returns ``(cluster_id, similarity, match_type)``.
-    ``match_type`` is one of: ``"auto"``, ``"review"``, ``"new"``.
+    ``match_type`` is one of: ``"matched"``, ``"new"``.
     """
     # --- fast path: check in-memory centroids from current batch ---
     if local_centroids:
         cid, sim, mtype = _match_local_centroids(
             embedding_vec, local_centroids,
-            auto_threshold=auto_threshold,
-            review_threshold=review_threshold,
+            match_threshold=match_threshold,
         )
         if mtype != "new":
             return cid, sim, mtype
@@ -485,16 +478,11 @@ def match_to_cluster(
     # --- slow path: pgvector ANN on committed clusters ---
     results = find_nearest_cluster(embedding_vec.tolist(), limit=1)
     if not results:
-        if local_centroids:
-            # Already checked local, no DB match either
-            return None, 0.0, "new"
         return None, 0.0, "new"
 
     cluster_id, similarity = results[0]
-    if similarity >= auto_threshold:
-        return cluster_id, similarity, "auto"
-    elif similarity >= review_threshold:
-        return cluster_id, similarity, "review"
+    if similarity >= match_threshold:
+        return cluster_id, similarity, "matched"
     else:
         return None, similarity, "new"
 
@@ -510,8 +498,7 @@ async def process_image_detections(
     parsed: ParsedImageData,
     classifier: dict[str, str],
     auto_apply_performers: bool = False,
-    auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
-    review_threshold: float = DEFAULT_REVIEW_THRESHOLD,
+    match_threshold: float = DEFAULT_MATCH_THRESHOLD,
     max_exemplars: int = DEFAULT_MAX_EXEMPLARS,
     dedup_threshold: float = DEFAULT_DEDUP_THRESHOLD,
     min_embedding_norm: float = DEFAULT_MIN_EMBEDDING_NORM,
@@ -532,7 +519,6 @@ async def process_image_detections(
         "performers_applied": [],
         "new_cluster_ids": [],
         "matched_cluster_ids": [],
-        "auto_match_cluster_ids": [],
     }
 
     # Collect face detections
@@ -627,8 +613,7 @@ async def process_image_detections(
                 # Match to cluster
                 cluster_id, similarity, match_type = match_to_cluster(
                     vec,
-                    auto_threshold=auto_threshold,
-                    review_threshold=review_threshold,
+                    match_threshold=match_threshold,
                     local_centroids=local_centroids,
                 )
 
@@ -656,11 +641,9 @@ async def process_image_detections(
                     summary["clusters_matched"] += 1
                     if cluster_id not in summary["matched_cluster_ids"]:
                         summary["matched_cluster_ids"].append(cluster_id)
-                    if match_type == "auto" and cluster_id not in summary["auto_match_cluster_ids"]:
-                        summary["auto_match_cluster_ids"].append(cluster_id)
                     _log.debug(
-                        "Image %s: matched face %d to cluster %d (sim=%.3f, %s%s)",
-                        image_id, det_idx, cluster_id, similarity, match_type,
+                        "Image %s: matched face %d to cluster %d (sim=%.3f%s)",
+                        image_id, det_idx, cluster_id, similarity,
                         "" if meets_quality else ", below-quality",
                     )
 
@@ -693,6 +676,8 @@ async def process_image_detections(
                             score=det.score,
                             max_exemplars=max_exemplars,
                             dedup_threshold=dedup_threshold,
+                            entity_type="image",
+                            entity_id=image_id,
                         )
                     store_face_embedding(
                         session,
@@ -726,13 +711,10 @@ async def process_image_detections(
             # Update centroids for any affected clusters
             _update_affected_centroids(session, summary)
 
-        # Auto-apply performers for images — only for high-confidence
-        # ("auto") matches.  "review"-level matches are surfaced in the
-        # FaceReviewPanel for human confirmation.
+        # Auto-apply performers for matched clusters that are already identified.
         if auto_apply_performers:
             applied_performer_ids: set[int] = set()
-            auto_cids = set(summary["auto_match_cluster_ids"])
-            for cid in auto_cids:
+            for cid in summary["matched_cluster_ids"]:
                 try:
                     cluster_obj = get_cluster_by_id(cid)
                     if (
@@ -789,8 +771,7 @@ async def process_video_detections(
     frame_interval: float,
     classifier: dict[str, str],
     auto_apply_performers: bool = False,
-    auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
-    review_threshold: float = DEFAULT_REVIEW_THRESHOLD,
+    match_threshold: float = DEFAULT_MATCH_THRESHOLD,
     max_exemplars: int = DEFAULT_MAX_EXEMPLARS,
     max_embeddings_per_track: int = DEFAULT_MAX_EMBEDDINGS_PER_TRACK,
     dedup_threshold: float = DEFAULT_DEDUP_THRESHOLD,
@@ -812,7 +793,6 @@ async def process_video_detections(
         "performers_applied": [],
         "new_cluster_ids": [],
         "matched_cluster_ids": [],
-        "auto_match_cluster_ids": [],
     }
 
     # Phase 1: Build tracks
@@ -931,8 +911,7 @@ async def process_video_detections(
 
                 cluster_id, similarity, match_type = match_to_cluster(
                     vec,
-                    auto_threshold=auto_threshold,
-                    review_threshold=review_threshold,
+                    match_threshold=match_threshold,
                     local_centroids=local_centroids,
                 )
 
@@ -959,14 +938,12 @@ async def process_video_detections(
                     summary["clusters_matched"] += 1
                     if cluster_id not in summary["matched_cluster_ids"]:
                         summary["matched_cluster_ids"].append(cluster_id)
-                    if match_type == "auto" and cluster_id not in summary["auto_match_cluster_ids"]:
-                        summary["auto_match_cluster_ids"].append(cluster_id)
                     # Seed count from DB on first encounter of existing cluster
                     if cluster_id not in cluster_emb_counts:
                         cluster_emb_counts[cluster_id] = count_cluster_embeddings(cluster_id)
                     _log.debug(
-                        "Scene %s track %d: matched to cluster %d (sim=%.3f, %s%s)",
-                        scene_id, track_idx, cluster_id, similarity, match_type,
+                        "Scene %s track %d: matched to cluster %d (sim=%.3f%s)",
+                        scene_id, track_idx, cluster_id, similarity,
                         "" if meets_quality else ", below-quality",
                     )
 
@@ -1001,6 +978,8 @@ async def process_video_detections(
                             score=fe.score,
                             max_exemplars=max_exemplars,
                             dedup_threshold=dedup_threshold,
+                            entity_type="scene",
+                            entity_id=scene_id,
                         )
                     store_face_embedding(
                         session,
@@ -1044,7 +1023,7 @@ async def process_video_detections(
         all_cluster_ids = list(
             set(summary["new_cluster_ids"]) | set(summary["matched_cluster_ids"])
         )
-        merges = _find_auto_merges(all_cluster_ids, auto_threshold=auto_threshold)
+        merges = _find_auto_merges(all_cluster_ids, match_threshold=match_threshold)
         for surviving_id, absorbed_id in merges:
             _log.debug(
                 "Scene %s: auto-merging cluster %d into %d",
@@ -1063,14 +1042,11 @@ async def process_video_detections(
                 cid for cid in summary["matched_cluster_ids"] if cid not in absorbed_ids
             ]
 
-        # Phase 6: Auto-apply performers — only for high-confidence
-        # ("auto") matches.  "review"-level matches are surfaced in the
-        # FaceReviewPanel for human confirmation rather than tagging
-        # automatically.
+        # Phase 6: Auto-apply performers for matched clusters that are
+        # already identified.
         if auto_apply_performers:
             applied_performer_ids: set[int] = set()
-            auto_cids = set(summary["auto_match_cluster_ids"])
-            for cid in auto_cids:
+            for cid in summary["matched_cluster_ids"]:
                 try:
                     cluster_obj = get_cluster_by_id(cid)
                     if (
@@ -1116,13 +1092,13 @@ async def process_video_detections(
 def _find_auto_merges(
     cluster_ids: list[int],
     *,
-    auto_threshold: float,
+    match_threshold: float,
 ) -> list[tuple[int, int]]:
     """Find clusters from this run that should be auto-merged.
 
     After centroids have been committed, compare each pair of clusters
     produced during the same processing run.  Pairs whose centroids have
-    cosine similarity >= *auto_threshold* are merged (larger cluster
+    cosine similarity >= *match_threshold* are merged (larger cluster
     survives).  Returns ``[(surviving_id, absorbed_id), ...]`` ordered
     highest-similarity first.
     """
@@ -1169,7 +1145,7 @@ def _find_auto_merges(
         for j in range(i + 1, len(cid_list)):
             a, b = cid_list[i], cid_list[j]
             sim = float(np.dot(centroids[a], centroids[b]))
-            if sim >= auto_threshold:
+            if sim >= match_threshold:
                 pairs.append((sim, a, b))
 
     if not pairs:
