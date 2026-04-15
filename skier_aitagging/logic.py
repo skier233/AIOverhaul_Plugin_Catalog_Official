@@ -60,7 +60,7 @@ from stash_ai_server.db.ai_results_store import (
     purge_scene_categories,
 )
 from stash_ai_server.db.detection_store import cleanup_stale_detections_async
-from stash_ai_server.db.embedding_store import store_scene_embeddings_batch_async
+from stash_ai_server.db.embedding_store import store_scene_embeddings_batch_async, get_entity_embeddings_async
 import csv
 import logging
 from .http_handler import get_active_scene_models
@@ -1220,42 +1220,6 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             except Exception:
                 _log.exception("Failed to process detections for scene %s", scene_id)
 
-        # --- Audio embedding processing ---
-        audio_summary_parts: list[str] = []
-        audio_result_data: dict | None = None
-        try:
-            audio_result = await call_audio_api(service, remote_scene_path)
-            if audio_result is not None:
-                emb_records = _build_audio_embedding_records(audio_result)
-                if emb_records:
-                    stored_ids = await store_scene_embeddings_batch_async(
-                        entity_type="scene",
-                        entity_id=scene_id,
-                        embeddings=emb_records,
-                        run_id=run_id,
-                    )
-                    _log.debug(
-                        "Scene %s: stored %d audio embedding(s) (ids=%s)",
-                        scene_id, len(stored_ids), stored_ids,
-                    )
-                    summary = audio_result.classification_summary
-                    dur = summary.duration_seconds if summary else {}
-                    audio_msg = (
-                        f"Audio: {len(emb_records)} embedding type(s) stored"
-                    )
-                    if dur:
-                        dur_parts = [f"{k}={v:.1f}s" for k, v in dur.items()]
-                        audio_msg += f" ({', '.join(dur_parts)})"
-                    audio_summary_parts.append(audio_msg)
-                    audio_result_data = {
-                        "embedding_types": [r["embedding_type"] for r in emb_records],
-                        "duration_seconds": dur,
-                        "total_kept_duration_seconds": summary.total_kept_duration_seconds if summary else 0.0,
-                        "windows_kept": summary.windows_kept if summary else 0,
-                    }
-        except Exception:
-            _log.exception("Failed to process audio embeddings for scene %s", scene_id)
-
         # --- Visual embedding processing ---
         visual_summary_parts: list[str] = []
         visual_result_data: dict | None = None
@@ -1318,7 +1282,6 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         if removed_tags:
             summary_parts.append(f"removed {removed_tags} scene tag(s)")
         summary_parts.extend(face_summary_parts)
-        summary_parts.extend(audio_summary_parts)
         summary_parts.extend(visual_summary_parts)
 
         if force_reprocess:
@@ -1336,7 +1299,6 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             "processed_ids": [scene_id],
             "failed_ids": [],
             "face_summary": face_result_data,
-            "audio_summary": audio_result_data,
             "visual_summary": visual_result_data,
         }
     except Exception as exc:
@@ -2328,6 +2290,33 @@ async def audio_embed_scene_task(ctx: ContextInput, params: dict, task_record: T
             "failed_ids": [scene_id],
         }
 
+    # --- Skip logic: check if audio embeddings already exist ---
+    force_reprocess = has_ai_reprocess(scene_tags)
+    if not force_reprocess:
+        try:
+            existing = await get_entity_embeddings_async(
+                entity_type="scene",
+                entity_id=scene_id,
+                embedding_type="audio_speech",
+            )
+            if existing:
+                _log.debug(
+                    "Skipping audio embedding for scene_id=%s; already has %d audio embedding(s)",
+                    scene_id, len(existing),
+                )
+                return {
+                    "action_type": "audio_embed",
+                    "scene_id": scene_id,
+                    "status": "success",
+                    "message": f"Scene #{scene_id}: audio embeddings already up-to-date, skipped.",
+                    "processed_ids": [scene_id],
+                    "failed_ids": [],
+                    "skipped": True,
+                    "audio_summary": None,
+                }
+        except Exception:
+            _log.debug("Could not check existing audio embeddings for scene_id=%s; proceeding", scene_id)
+
     remote_scene_path = mutate_path_for_plugin(scene_path or "", service.plugin_name)
 
     try:
@@ -2390,6 +2379,13 @@ async def audio_embed_scene_task(ctx: ContextInput, params: dict, task_record: T
         f"Scene #{scene_id}: {len(emb_records)} audio embedding(s) stored{dur_str}."
     )
     _log.info(message)
+
+    # Remove AI_Reprocess tag after successful processing
+    if force_reprocess:
+        try:
+            await remove_reprocess_tag_from_scene(scene_id)
+        except Exception:
+            _log.exception("Failed to remove AI_Reprocess tag from scene %s", scene_id)
 
     return {
         "action_type": "audio_embed",

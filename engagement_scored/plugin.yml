@@ -1,0 +1,7 @@
+name: engagement_scored
+human_name: Engagement-Scored Recommender
+version: 0.1.0
+required_backend: '>=0.0.0'
+files:
+  - recommender
+depends_on: []

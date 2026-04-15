@@ -1,0 +1,7 @@
+name: content_based
+human_name: Content-Based Recommender
+version: 0.1.0
+required_backend: '>=0.0.0'
+files:
+  - recommender
+depends_on: []
